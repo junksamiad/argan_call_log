@@ -29,7 +29,7 @@ def init_db():
     """Initialize database tables"""
     try:
         # Import here to ensure event listeners are registered
-        from backend.email_functions import assign_ticket
+        from backend.email_functions.classification import assign_ticket
         
         Base.metadata.create_all(bind=engine)
         logger.info("💾 [DATABASE] Database tables created successfully")

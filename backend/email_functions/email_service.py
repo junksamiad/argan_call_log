@@ -34,11 +34,26 @@ class EmailService:
         Send an HR response email using direct HTTP request to SendGrid API
         """
         try:
+            # Validate and clean email address
+            to_email = to_email.strip()
+            if not to_email or '@' not in to_email:
+                raise ValueError(f"Invalid email address: {to_email}")
+            
+            # Clean and validate subject
+            subject = subject.strip()
+            if not subject:
+                subject = "HR System Response"
+            
             # Format subject with ticket number
             if ticket_number and not f"[{ticket_number}]" in subject:
                 formatted_subject = f"[{ticket_number}] {subject}"
             else:
                 formatted_subject = subject
+            
+            # Clean content
+            content_text = content_text.strip()
+            if content_html:
+                content_html = content_html.strip()
             
             # Build email payload
             payload = {
@@ -51,11 +66,15 @@ class EmailService:
                     "email": self.from_email,
                     "name": "Argan HR Consultancy"
                 },
+                "reply_to": {
+                    "email": self.from_email,
+                    "name": "Argan HR Consultancy"
+                },
                 "subject": formatted_subject,
                 "content": [
                     {
                         "type": "text/plain",
-                        "value": content_text
+                        "value": content_text.encode('utf-8').decode('utf-8')
                     }
                 ]
             }
@@ -64,13 +83,16 @@ class EmailService:
             if content_html:
                 payload["content"].append({
                     "type": "text/html",
-                    "value": content_html
+                    "value": content_html.encode('utf-8').decode('utf-8')
                 })
+            
+            # Debug: Log the payload (without API key)
+            logger.info(f"📤 [EMAIL SERVICE] Email payload - To: {to_email}, From: {self.from_email}, Subject: {formatted_subject}")
             
             # Send via HTTP request
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json; charset=utf-8"
             }
             
             logger.info(f"📤 [EMAIL SERVICE] Sending email to: {to_email}")
@@ -85,12 +107,17 @@ class EmailService:
             
             if response.status_code == 202:
                 logger.info(f"✅ [EMAIL SERVICE] Email sent successfully to: {to_email}")
+                logger.info(f"📧 [EMAIL SERVICE] Subject: {formatted_subject}")
+                logger.info(f"📧 [EMAIL SERVICE] From: {self.from_email}")
+                logger.info(f"📧 [EMAIL SERVICE] Response headers: {dict(response.headers)}")
                 return {
                     "success": True,
                     "status_code": response.status_code,
                     "message": "Email sent successfully",
                     "recipient": to_email,
-                    "subject": formatted_subject
+                    "subject": formatted_subject,
+                    "from_email": self.from_email,
+                    "response_headers": dict(response.headers)
                 }
             else:
                 logger.error(f"Failed to send email. Status: {response.status_code}, Body: {response.text}")

@@ -1,189 +1,168 @@
 """
-Initial Email Handler for HR Email Management System
-Handles new email queries by generating tickets and sending auto-replies
+Initial Email Handler with AI Enhancement and Airtable Integration
+Processes new emails, generates tickets, extracts AI metadata, and stores in Airtable
 """
 
 import logging
-from typing import Dict, Any
-from sqlalchemy.orm import Session
+import asyncio
 from datetime import datetime
-
-from backend.email_functions.assign_ticket import init_ticket_counter
-from backend.email_functions.auto_reply import AutoReplySender
-from .initial_email_content import InitialEmailContent
-from backend.database import EmailThread, EmailMessage, TicketCounter, MessageType, ThreadStatus
+from backend.email_functions.classification.assign_ticket import generate_ticket_number_standalone
+from backend.airtable_service import AirtableService
+from backend.email_functions.auto_reply import send_auto_reply
 
 logger = logging.getLogger(__name__)
 
 
-class InitialEmailHandler:
-    def __init__(self, db_session: Session):
-        self.db = db_session
-        self.auto_reply_sender = AutoReplySender()
-        self.content_generator = InitialEmailContent()
+async def process_initial_email(email_data, classification_data=None):
+    """
+    Process a new email with AI classification data and store in Airtable
     
-    def generate_ticket_number(self) -> str:
-        """
-        Generate a unique ticket number in format: ARG-YYYYMMDD-XXXX
-        Where XXXX is a sequential number for the day
-        """
-        try:
-            # Get current date
-            today = datetime.now().strftime("%Y%m%d")
-            
-            # Get or create ticket counter for today
-            counter = self.db.query(TicketCounter).first()
-            if not counter:
-                counter = TicketCounter(last_number=0)
-                self.db.add(counter)
-                self.db.flush()
-            
-            # Increment counter
-            counter.last_number += 1
-            next_number = counter.last_number
-            
-            # Format ticket number
-            ticket_number = f"ARG-{today}-{next_number:04d}"
-            
-            # Ensure uniqueness (in case of race conditions)
-            existing = self.db.query(EmailThread).filter_by(ticket_number=ticket_number).first()
-            if existing:
-                # If exists, increment and try again
-                counter.last_number += 1
-                next_number = counter.last_number
-                ticket_number = f"ARG-{today}-{next_number:04d}"
-            
-            self.db.commit()
-            logger.info(f"🎫 [TICKET GEN] Generated ticket number: {ticket_number}")
-            return ticket_number
-            
-        except Exception as e:
-            logger.error(f"Error generating ticket number: {e}")
-            self.db.rollback()
-            # Fallback to timestamp-based ticket
-            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            return f"ARG-{timestamp}"
-    
-    async def handle_new_email(self, email_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handle a new email query by creating a ticket and sending auto-reply
+    Args:
+        email_data: Raw email data from webhook
+        classification_data: AI classification results (optional)
+    """
+    try:
+        logger.info(f"📧 [INITIAL EMAIL] Processing new email from {email_data.get('sender')}")
         
-        Args:
-            email_data: Email data from SendGrid
-            
-        Returns:
-            Dict with processing results
-        """
-        try:
-            sender_email = email_data.get('sender')
-            original_subject = email_data.get('subject', 'No Subject')
-            original_body = email_data.get('body_text', '')
-            
-            logger.info(f"📧 [INITIAL EMAIL] Processing new email from {sender_email}")
-            
-            # Generate new ticket number
-            ticket_number = self.generate_ticket_number()
-            logger.info(f"🎫 [INITIAL EMAIL] New ticket created: {ticket_number}")
-            
-            # Create new thread in database
-            thread = self._create_new_thread(email_data, ticket_number)
-            
-            # Generate auto-reply content
-            content = self.content_generator.generate_auto_reply_content(
-                ticket_number=ticket_number,
-                original_sender=sender_email,
-                original_subject=original_subject,
-                original_body=original_body
-            )
-            
-            # Format subject with ticket number
-            reply_subject = self.content_generator.format_reply_subject(original_subject, ticket_number)
-            
-            # Send auto-reply
-            reply_result = await self.auto_reply_sender.send_auto_reply(
-                to_email=sender_email,
-                subject=reply_subject,
-                content_text=content['text'],
-                content_html=content['html'],
-                ticket_number=ticket_number
-            )
-            
-            # Log the auto-reply as an outbound message
-            if reply_result.get('success'):
-                self._log_auto_reply_message(thread, reply_result, ticket_number)
-            
-            return {
-                "success": True,
-                "ticket_number": ticket_number,
-                "thread_id": thread.id,
-                "auto_reply_sent": reply_result.get('success', False),
-                "message": f"New email processed successfully. Ticket: {ticket_number}"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing new email: {e}")
-            self.db.rollback()
-            return {
-                "success": False,
-                "error": str(e),
-                "message": "Failed to process new email"
-            }
-    
-    def _create_new_thread(self, email_data: Dict, ticket_number: str) -> EmailThread:
-        """Create a new email thread"""
-        thread = EmailThread(
+        # Initialize Airtable service
+        airtable = AirtableService()
+        
+        # Generate ticket number
+        ticket_number = generate_ticket_number_standalone()
+        logger.info(f"🎫 [TICKET GEN] Generated ticket number: {ticket_number}")
+        
+        # Prepare enhanced email data with AI metadata
+        enhanced_email_data = prepare_enhanced_email_data(email_data, classification_data)
+        
+        # Create record in Airtable
+        airtable_record = airtable.create_email_record(
+            email_data=enhanced_email_data,
             ticket_number=ticket_number,
-            subject=email_data.get('subject', 'No Subject'),
-            staff_email=email_data.get('sender'),
-            staff_name=email_data.get('sender_name', email_data.get('sender')),
-            query_type='general_inquiry',  # Default, can be updated by AI later
-            status=ThreadStatus.OPEN.value,
-            priority='normal',
-            summary=f"New query from {email_data.get('sender')}"
+            classification_data=classification_data
         )
         
-        self.db.add(thread)
-        self.db.flush()  # Get the ID
+        logger.info(f"🎫 [INITIAL EMAIL] New ticket created: {ticket_number}")
+        logger.info(f"📊 [AIRTABLE] Record created with ID: {airtable_record['id']}")
         
-        # Add the original message
-        message = EmailMessage(
-            thread_id=thread.id,
-            message_id=email_data.get('message_id'),
-            sender=email_data.get('sender'),
-            recipients=email_data.get('recipients', []),
-            cc=email_data.get('cc', []),
-            subject=email_data.get('subject'),
-            body_text=email_data.get('body_text'),
-            body_html=email_data.get('body_html'),
-            message_type=MessageType.INBOUND.value,
-            direction='in',
-            email_date=email_data.get('email_date', datetime.utcnow())
-        )
-        
-        self.db.add(message)
-        self.db.commit()
-        
-        logger.info(f"💾 [DATABASE] Created new thread: {ticket_number}")
-        return thread
-    
-    def _log_auto_reply_message(self, thread: EmailThread, reply_result: Dict, ticket_number: str):
-        """Log the auto-reply as an outbound message"""
+        # Send auto-reply with ticket number
         try:
-            message = EmailMessage(
-                thread_id=thread.id,
-                message_id=f"auto-reply-{datetime.utcnow().timestamp()}",
-                sender=self.auto_reply_sender.email_service.from_email,
-                recipients=[thread.staff_email],
-                cc=self.auto_reply_sender.get_default_cc_addresses(),
-                subject=reply_result.get('subject', f"Auto-reply: {ticket_number}"),
-                body_text="Auto-reply sent with ticket number",
-                message_type=MessageType.OUTBOUND.value,
-                direction='out',
-                email_date=datetime.utcnow()
+            auto_reply_success = await send_auto_reply(
+                recipient=email_data.get('sender'),
+                ticket_number=ticket_number,
+                original_subject=email_data.get('subject', ''),
+                sender_name=email_data.get('sender_name', ''),
+                priority=extract_priority_from_classification(classification_data),
+                ai_summary=extract_ai_summary(classification_data)
             )
             
-            self.db.add(message)
-            self.db.commit()
+            if auto_reply_success:
+                # Update Airtable record to mark auto-reply sent
+                airtable.table.update(airtable_record['id'], {
+                    "Auto Reply Sent": True,
+                    "Auto Reply Timestamp": datetime.utcnow().isoformat()
+                })
+                logger.info(f"✅ [AUTO REPLY] Sent confirmation to {email_data.get('sender')}")
             
         except Exception as e:
-            logger.error(f"Error logging auto-reply message: {e}") 
+            logger.error(f"❌ [AUTO REPLY] Failed to send auto-reply: {e}")
+        
+        return {
+            "success": True,
+            "ticket_number": ticket_number,
+            "airtable_record_id": airtable_record['id'],
+            "message": f"New ticket created: {ticket_number}",
+            "ai_classification": classification_data.get('EMAIL_CLASSIFICATION') if classification_data else None,
+            "ai_confidence": classification_data.get('confidence_score') if classification_data else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing new email: {e}")
+        raise Exception(f"Failed to process new email: {e}")
+
+
+def prepare_enhanced_email_data(email_data, classification_data=None):
+    """
+    Enhance email data with AI classification results and metadata
+    
+    Args:
+        email_data: Original email data
+        classification_data: AI classification results
+        
+    Returns:
+        Enhanced email data dictionary
+    """
+    # Start with original email data
+    enhanced_data = email_data.copy()
+    
+    # Add AI-extracted metadata if available
+    if classification_data and hasattr(classification_data, 'EMAIL_DATA'):
+        ai_data = classification_data.EMAIL_DATA
+        
+        # Enhance with AI-extracted fields
+        enhanced_data.update({
+            'sender_name': ai_data.sender_name or email_data.get('sender_name', ''),
+            'sender_domain': ai_data.sender_domain,
+            'urgency_keywords': ai_data.urgency_keywords,
+            'sentiment_tone': ai_data.sentiment_tone,
+            'mentioned_people': ai_data.mentioned_people,
+            'mentioned_departments': ai_data.mentioned_departments,
+            'deadline_mentions': ai_data.deadline_mentions,
+            'policy_references': ai_data.policy_references,
+            'contact_phone': ai_data.contact_phone,
+            'contact_address': ai_data.contact_address,
+            'ai_summary': ai_data.ai_summary,
+            'ai_processing_timestamp': classification_data.processing_timestamp
+        })
+        
+        logger.info(f"🤖 [AI ENHANCEMENT] Enhanced email data with AI extraction")
+        
+        # Log extracted insights
+        if ai_data.urgency_keywords:
+            logger.info(f"🚨 [AI INSIGHTS] Urgency keywords detected: {ai_data.urgency_keywords}")
+        if ai_data.sentiment_tone:
+            logger.info(f"😊 [AI INSIGHTS] Sentiment: {ai_data.sentiment_tone}")
+        if ai_data.deadline_mentions:
+            logger.info(f"⏰ [AI INSIGHTS] Deadlines mentioned: {ai_data.deadline_mentions}")
+    
+    return enhanced_data
+
+
+def extract_priority_from_classification(classification_data):
+    """Extract priority level from AI classification data"""
+    if not classification_data or not hasattr(classification_data, 'EMAIL_DATA'):
+        return "Normal"
+    
+    urgency_keywords = classification_data.EMAIL_DATA.urgency_keywords
+    if not urgency_keywords:
+        return "Normal"
+    
+    # Convert to list if it's a JSON string
+    if isinstance(urgency_keywords, str):
+        try:
+            import json
+            urgency_keywords = json.loads(urgency_keywords)
+        except:
+            urgency_keywords = []
+    
+    # Determine priority based on urgency keywords
+    urgent_keywords = ['urgent', 'emergency', 'asap', 'immediate', 'critical']
+    high_keywords = ['important', 'priority', 'deadline', 'soon']
+    
+    if any(keyword.lower() in [uk.lower() for uk in urgency_keywords] for keyword in urgent_keywords):
+        return "Urgent"
+    elif any(keyword.lower() in [uk.lower() for uk in urgency_keywords] for keyword in high_keywords):
+        return "High"
+    else:
+        return "Normal"
+
+
+def extract_ai_summary(classification_data):
+    """Extract AI summary for auto-reply personalization"""
+    if not classification_data or not hasattr(classification_data, 'EMAIL_DATA'):
+        return None
+    
+    return classification_data.EMAIL_DATA.ai_summary
+
+
+# Keep backward compatibility
+process_new_email = process_initial_email 
