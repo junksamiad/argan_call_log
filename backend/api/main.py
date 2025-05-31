@@ -5,9 +5,9 @@ from typing import List, Optional
 from datetime import datetime
 import logging
 from backend.utils.database import get_db, init_db, SessionLocal
-from backend.services.email_processor import EmailProcessor
 from backend.models import schemas, database
 from backend.api import auth
+from backend.api.endpoints.webhook import router as webhook_router
 from config.settings import settings
 
 # Configure logging
@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
-    title=settings.APP_NAME,
+    title="Argan Call Log - Auto-Reply System",
     version="1.0.0",
-    description="HR Email Query Management System API"
+    description="HR Email Auto-Reply System with Ticket Generation"
 )
 
 # Add CORS middleware
@@ -30,21 +30,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include webhook routes (this is what receives emails from SendGrid)
+app.include_router(webhook_router, prefix="/webhook", tags=["webhooks"])
+
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize database on startup"""
     init_db()
-    logger.info("Application started")
+    logger.info("🚀 Argan Auto-Reply System started")
 
 
 @app.get("/")
 async def root():
     """Root endpoint"""
     return {
-        "message": "Argan HR Email Management System API",
+        "message": "🎯 Argan Auto-Reply System",
         "version": "1.0.0",
-        "status": "active"
+        "status": "active",
+        "endpoints": {
+            "webhook_test": "/webhook/test",
+            "sendgrid_inbound": "/webhook/inbound",
+            "threads": "/api/v1/threads"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "system": "auto-reply",
+        "database": "connected"
     }
 
 
@@ -73,7 +91,7 @@ async def get_threads(
     # Convert to response model
     thread_responses = []
     for thread in threads:
-        thread_dict = thread.__dict__
+        thread_dict = thread.__dict__.copy()
         thread_dict['message_count'] = len(thread.messages)
         if thread.messages:
             thread_dict['last_message_date'] = max(msg.created_at for msg in thread.messages)
@@ -94,7 +112,7 @@ async def get_thread(thread_id: int, db: Session = Depends(get_db)):
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
         
-    thread_dict = thread.__dict__
+    thread_dict = thread.__dict__.copy()
     thread_dict['message_count'] = len(thread.messages)
     if thread.messages:
         thread_dict['last_message_date'] = max(msg.created_at for msg in thread.messages)
@@ -112,41 +130,6 @@ async def get_thread_messages(thread_id: int, db: Session = Depends(get_db)):
     return [schemas.EmailMessageResponse.from_orm(msg) for msg in messages]
 
 
-@app.post("/api/v1/threads/{thread_id}/reply")
-async def send_reply(
-    thread_id: int,
-    reply: schemas.EmailReplyRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """Send a reply to an email thread"""
-    processor = EmailProcessor(db)
-    
-    success = processor.send_reply(
-        thread_id=thread_id,
-        body=reply.body,
-        recipients=reply.recipients,
-        cc=reply.cc
-    )
-    
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to send email")
-        
-    return {"message": "Reply sent successfully", "thread_id": thread_id}
-
-
-@app.post("/api/v1/process-emails")
-async def process_emails(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Manually trigger email processing"""
-    def process():
-        with SessionLocal() as db_session:
-            processor = EmailProcessor(db_session)
-            processor.process_new_emails()
-            
-    background_tasks.add_task(process)
-    return {"message": "Email processing started"}
-
-
 @app.put("/api/v1/threads/{thread_id}/status")
 async def update_thread_status(
     thread_id: int,
@@ -162,24 +145,6 @@ async def update_thread_status(
     db.commit()
     
     return {"message": "Status updated", "thread_id": thread_id, "status": status.value}
-
-
-@app.put("/api/v1/messages/{message_id}/approve")
-async def approve_message(
-    message_id: int,
-    approved_by: str,
-    db: Session = Depends(get_db)
-):
-    """Approve a message for sending"""
-    message = db.query(database.EmailMessage).filter(database.EmailMessage.id == message_id).first()
-    if not message:
-        raise HTTPException(status_code=404, detail="Message not found")
-        
-    message.approved_by = approved_by
-    message.approved_at = datetime.utcnow()
-    db.commit()
-    
-    return {"message": "Message approved", "message_id": message_id}
 
 
 # Include auth routes

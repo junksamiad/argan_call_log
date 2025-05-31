@@ -1,212 +1,165 @@
-# Argan HR Email Management System
+# Argan Call Log - Auto-Reply System
 
-An automated email processing system for HR queries with AI-powered analysis, response suggestions, and approval workflows.
+🎯 **Simple, focused email auto-reply system for Argan Consultancy HR**
 
-## Features
+## What It Does
 
-- **Email Integration**: Automatically fetches emails from IONOS email account
-- **AI Processing**: 
-  - Extracts structured information from emails using GPT-4
-  - Generates executive summaries and action items
-  - Suggests professional responses
-- **Thread Management**: Tracks conversation threads with unique ticket numbers
-- **Approval Workflow**: Routes queries through ops managers for approval
-- **Dashboard API**: RESTful API for frontend integration
+When someone sends an email to your HR address, this system:
+
+1. **Receives the email** via SendGrid webhook
+2. **Generates a unique ticket number** (format: `ARG-YYYYMMDD-XXXX`)
+3. **Sends an auto-reply** to the sender with the ticket number
+4. **CCs advice@arganconsultancy.co.uk** on the reply
+5. **Stores everything** in a database for tracking
+
+## Quick Start
+
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Set Up Environment
+Create a `.env` file:
+```env
+# SendGrid Configuration
+SENDGRID_API_KEY=your_sendgrid_api_key_here
+EMAIL_ADDRESS=your_from_email@arganconsultancy.co.uk
+
+# Database (SQLite by default)
+DATABASE_URL=sqlite:///argan_email.db
+```
+
+### 3. Test the System
+```bash
+# Test core functionality (no email sending)
+python test_ticket_generation.py
+
+# Test with sample email processing
+python email_auto_reply_handler.py --test
+```
+
+### 4. Run the Server
+```bash
+python main.py
+```
+
+The server will start on `http://localhost:8000`
+
+### 5. Set Up SendGrid Webhook
+
+1. **Expose your local server** (for testing):
+   ```bash
+   ngrok http 8000
+   ```
+
+2. **Configure SendGrid Inbound Parse**:
+   - Go to SendGrid → Settings → Inbound Parse
+   - Add your ngrok URL: `https://your-ngrok-url.ngrok.io/webhook/inbound`
+   - Set destination email (e.g., `support@email.adaptixinnovation.co.uk`)
+
+### 6. Test Live Email Processing
+
+Send an email to your configured address and watch the magic happen! ✨
 
 ## System Architecture
 
 ```
-Email Account (IONOS) → IMAP Fetch → AI Processing Pipeline → Database → API → Frontend
-                                          ↓
-                                   - Parse & Extract
-                                   - Summarize
-                                   - Generate Response
+Email → SendGrid → Webhook → Auto-Reply System → Database
+                              ↓
+                         Auto-Reply Email → Sender + CC
 ```
 
-## How the System Works
-
-1. **Email arrives** → System checks for existing ticket number in subject line (e.g., `[ARG-00001]`)
-2. **Thread detection**:
-   - If ticket exists → Add to existing thread
-   - If new email → Process as new thread
-3. **AI Processing** (for new threads):
-   - Extract structured data (staff name, query type, urgency)
-   - Generate executive summary
-   - Create suggested response
-4. **Database Storage**:
-   - Create EmailThread record
-   - Database auto-generates unique ticket number (`ARG-00001`, `ARG-00002`, etc.)
-   - Store all extracted data and AI suggestions
-5. **Dashboard Access**:
-   - HR staff can view threads and messages
-   - Review AI-suggested responses
-   - Edit and send responses
-   - Route to ops manager for approval
-6. **Reply Sent**:
-   - Ticket number automatically added to subject: `[ARG-00001] Original Subject`
-   - Links future responses to the same thread
-
-## Setup Instructions
-
-### 1. Prerequisites
-
-- Python 3.8+
-- PostgreSQL (or SQLite for development)
-- Redis (for background tasks)
-- OpenAI API key
-
-### 2. Installation
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd argan_call_log
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### 3. Configuration
-
-Create a `.env` file in the root directory:
-
-```env
-# OpenAI Configuration
-OPENAI_API_KEY=your-openai-api-key
-
-# Database Configuration
-DATABASE_URL=postgresql://user:password@localhost/argan_email_db
-
-# Email Configuration (Already set in config/settings.py)
-# Modify if needed
-
-# Redis Configuration
-REDIS_URL=redis://localhost:6379
-```
-
-### 4. Database Setup
-
-```bash
-# Initialize database tables
-python -c "from backend.utils.database import init_db; init_db()"
-```
-
-### 5. Running the Application
-
-#### Start the API Server:
-
-```bash
-cd backend/api
-python main.py
-```
-
-The API will be available at `http://localhost:8000`
-
-#### Start Celery Worker (for background email processing):
-
-```bash
-celery -A backend.services.celery_app worker --loglevel=info
-```
-
-#### Start Celery Beat (for scheduled email checks):
-
-```bash
-celery -A backend.services.celery_app beat --loglevel=info
-```
-
-## API Endpoints
-
-### Email Threads
-
-- `GET /api/v1/threads` - List all email threads with pagination
-- `GET /api/v1/threads/{thread_id}` - Get specific thread details
-- `GET /api/v1/threads/{thread_id}/messages` - Get all messages in a thread
-- `POST /api/v1/threads/{thread_id}/reply` - Send a reply
-- `PUT /api/v1/threads/{thread_id}/status` - Update thread status
-
-### Email Processing
-
-- `POST /api/v1/process-emails` - Manually trigger email processing
-
-### Authentication
-
-- `POST /api/v1/auth/token` - Login and get access token
-- `POST /api/v1/auth/register` - Register new user
-
-## Email Processing Flow
-
-1. **Email Reception**: System checks for new emails every 60 seconds
-2. **Thread Detection**: Checks subject line for existing ticket numbers `[ARG-XXXXX]`
-3. **AI Processing**:
-   - Extracts: staff name, email, query type, urgency level
-   - Generates: executive summary, key points, action items
-   - Creates: suggested response
-4. **Database Storage**: All data stored with unique ticket number
-5. **Dashboard Access**: HR staff can view, respond, and manage queries
-
-## Testing Email Connection
-
-Run the test script to verify email connection:
-
-```bash
-python test_email_connection.py
-```
-
-## Development
-
-### Project Structure
+## File Structure
 
 ```
 argan_call_log/
+├── main.py                           # FastAPI application
+├── email_auto_reply_handler.py       # Standalone email handler
+├── test_ticket_generation.py         # Test script
 ├── backend/
-│   ├── api/           # FastAPI routes
-│   ├── models/        # Database models & schemas
-│   ├── services/      # Business logic
-│   └── utils/         # Helper functions
-├── config/            # Configuration
-├── tests/             # Test files
-└── frontend/          # Frontend application (to be built)
+│   ├── services/
+│   │   ├── auto_reply_service.py     # Core auto-reply logic
+│   │   └── email_service.py          # SendGrid email sending
+│   ├── models/
+│   │   ├── database.py               # Database models
+│   │   └── schemas.py                # Pydantic schemas
+│   ├── api/endpoints/
+│   │   └── webhook.py                # SendGrid webhook endpoint
+│   └── utils/
+│       └── database.py               # Database utilities
+├── config/
+│   └── settings.py                   # Configuration
+└── requirements.txt                  # Dependencies
 ```
 
-### Adding New Features
+## Features
 
-1. Create/modify models in `backend/models/`
-2. Add business logic in `backend/services/`
-3. Expose via API in `backend/api/`
-4. Update schemas in `backend/models/schemas.py`
+✅ **Unique Ticket Generation** - `ARG-YYYYMMDD-XXXX` format  
+✅ **Professional Auto-Replies** - HTML + text versions  
+✅ **Thread Tracking** - Handles follow-up emails  
+✅ **Database Storage** - SQLite (easily switchable)  
+✅ **SendGrid Integration** - Reliable email delivery  
+✅ **Webhook Processing** - Real-time email handling  
+✅ **Clean Architecture** - Easy to maintain and extend  
 
-## Security Notes
+## API Endpoints
 
-- Change default passwords before production deployment
-- Use environment variables for sensitive data
-- Configure CORS appropriately for production
-- Implement rate limiting for API endpoints
-- Regular security audits recommended
+- `GET /` - System status
+- `GET /health` - Health check
+- `GET /webhook/test` - Test webhook connectivity
+- `POST /webhook/inbound` - SendGrid email webhook
 
-## Troubleshooting
+## Testing
 
-### Email Connection Issues
+### Test Core Functionality
+```bash
+python test_ticket_generation.py
+```
 
-- Verify IONOS email credentials
-- Check IMAP/SMTP server settings
-- Ensure ports 993 (IMAP) and 465 (SMTP) are not blocked
+### Test Email Handler
+```bash
+python email_auto_reply_handler.py --test
+```
 
-### Database Issues
+### Test Specific Email
+```bash
+python email_auto_reply_handler.py \
+  --sender "test@example.com" \
+  --subject "Test Question" \
+  --body "This is a test email"
+```
 
-- Ensure PostgreSQL is running
-- Check DATABASE_URL in configuration
-- Run database migrations if needed
+## Configuration
 
-### AI Processing Issues
+All configuration is in `config/settings.py` and can be overridden with environment variables:
 
-- Verify OpenAI API key is valid
-- Check API rate limits
-- Monitor token usage
+- `SENDGRID_API_KEY` - Your SendGrid API key
+- `EMAIL_ADDRESS` - From email address
+- `DATABASE_URL` - Database connection string
+- `TICKET_PREFIX` - Ticket number prefix (default: "ARG")
+
+## Deployment
+
+For production deployment:
+
+1. Set up a proper domain and SSL
+2. Configure SendGrid with your production webhook URL
+3. Use a production database (PostgreSQL recommended)
+4. Set up monitoring and logging
+
+## Future Enhancements
+
+- 🔄 Airtable integration for ticket management
+- 🤖 AI-powered email analysis and categorization
+- 📊 Dashboard for ticket tracking
+- 📱 Mobile notifications
+- 🔐 Authentication and user management
 
 ## Support
 
-For issues or questions, please contact the development team. 
+For issues or questions, contact the development team or check the logs in the application output.
+
+---
+
+**Built with ❤️ for Argan Consultancy HR Team** 

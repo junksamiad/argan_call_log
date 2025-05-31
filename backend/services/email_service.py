@@ -5,6 +5,8 @@ Handles sending emails through SendGrid API
 
 import os
 import logging
+import json
+import httpx
 from typing import Optional, List, Dict, Any
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, From, To, Subject, PlainTextContent, HtmlContent, Attachment, FileContent, FileName, FileType, Disposition
@@ -14,8 +16,10 @@ logger = logging.getLogger(__name__)
 
 class EmailService:
     def __init__(self):
-        self.api_key = settings.sendgrid_api_key
-        self.from_email = settings.email_address
+        self.api_key = settings.SENDGRID_API_KEY
+        self.from_email = settings.EMAIL_ADDRESS
+        
+        # Initialize SendGrid client
         self.sg = SendGridAPIClient(api_key=self.api_key)
     
     async def send_hr_response(
@@ -28,18 +32,7 @@ class EmailService:
         attachments: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
-        Send an HR response email
-        
-        Args:
-            to_email: Recipient email address
-            subject: Email subject (ticket number will be added if provided)
-            content_text: Plain text content
-            content_html: HTML content (optional)
-            ticket_number: Ticket number to include in subject
-            attachments: List of attachment dictionaries
-            
-        Returns:
-            Dict with success status and details
+        Send an HR response email using direct HTTP request to SendGrid API
         """
         try:
             # Format subject with ticket number
@@ -48,35 +41,48 @@ class EmailService:
             else:
                 formatted_subject = subject
             
-            # Create the email
-            message = Mail(
-                from_email=From(self.from_email, "Argan HR Consultancy"),
-                to_emails=To(to_email),
-                subject=Subject(formatted_subject),
-                plain_text_content=PlainTextContent(content_text)
-            )
+            # Build email payload
+            payload = {
+                "personalizations": [
+                    {
+                        "to": [{"email": to_email}]
+                    }
+                ],
+                "from": {
+                    "email": self.from_email,
+                    "name": "Argan HR Consultancy"
+                },
+                "subject": formatted_subject,
+                "content": [
+                    {
+                        "type": "text/plain",
+                        "value": content_text
+                    }
+                ]
+            }
             
             # Add HTML content if provided
             if content_html:
-                message.content = [
-                    PlainTextContent(content_text),
-                    HtmlContent(content_html)
-                ]
+                payload["content"].append({
+                    "type": "text/html",
+                    "value": content_html
+                })
             
-            # Add attachments if provided
-            if attachments:
-                for attachment_data in attachments:
-                    attachment = Attachment(
-                        FileContent(attachment_data.get('content')),
-                        FileName(attachment_data.get('filename')),
-                        FileType(attachment_data.get('type', 'application/octet-stream')),
-                        Disposition('attachment')
-                    )
-                    message.attachment = attachment
+            # Send via HTTP request
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
             
-            # Send the email
             logger.info(f"Sending email to {to_email} with subject: {formatted_subject}")
-            response = self.sg.send(message)
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.sendgrid.com/v3/mail/send",
+                    headers=headers,
+                    json=payload,
+                    timeout=30.0
+                )
             
             if response.status_code == 202:
                 logger.info(f"Email sent successfully to {to_email}")
@@ -88,12 +94,12 @@ class EmailService:
                     "subject": formatted_subject
                 }
             else:
-                logger.error(f"Failed to send email. Status: {response.status_code}")
+                logger.error(f"Failed to send email. Status: {response.status_code}, Body: {response.text}")
                 return {
                     "success": False,
                     "status_code": response.status_code,
                     "message": f"Failed to send email. Status: {response.status_code}",
-                    "error": response.body
+                    "error": response.text
                 }
                 
         except Exception as e:
