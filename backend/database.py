@@ -1,9 +1,85 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, event
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, event, create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, sessionmaker, Session
 from sqlalchemy.sql import func
+from sqlalchemy.pool import StaticPool
 from datetime import datetime
+from enum import Enum
 import uuid
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Database Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///argan_email.db")
+
+# Create engine
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+    poolclass=StaticPool if "sqlite" in DATABASE_URL else None,
+)
+
+# Create session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def init_db():
+    """Initialize database tables"""
+    try:
+        # Import here to ensure event listeners are registered
+        from backend.email_functions import assign_ticket
+        
+        Base.metadata.create_all(bind=engine)
+        logger.info("💾 [DATABASE] Database tables created successfully")
+        
+        # Initialize ticket counter
+        with SessionLocal() as db:
+            assign_ticket.init_ticket_counter(db)
+        
+    except Exception as e:
+        logger.error(f"Error creating database tables: {str(e)}")
+        raise
+
+
+def get_db() -> Session:
+    """Get database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Enums for database field values
+class MessageType(str, Enum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+    INTERNAL_NOTE = "internal_note"
+
+
+class ThreadStatus(str, Enum):
+    OPEN = "open"
+    PENDING_APPROVAL = "pending_approval"
+    CLOSED = "closed"
+
+
+class Priority(str, Enum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    URGENT = "urgent"
+
+
+class QueryType(str, Enum):
+    LEAVE_REQUEST = "leave_request"
+    POLICY_QUESTION = "policy_question"
+    COMPLAINT = "complaint"
+    GENERAL_INQUIRY = "general_inquiry"
+    PAYROLL = "payroll"
+    BENEFITS = "benefits"
+    TRAINING = "training"
+    OTHER = "other"
 
 Base = declarative_base()
 

@@ -3,8 +3,9 @@ Database setup utilities for automatic ticket number generation
 """
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session
-from backend.models.database import EmailThread, TicketCounter
+from backend.database import EmailThread, TicketCounter
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -53,17 +54,19 @@ def generate_ticket_number(mapper, connection, target):
                 next_number = row[0]
             
         # Format ticket number with leading zeros
-        target.ticket_number = f"ARG-{next_number:05d}"
-        logger.info(f"Generated ticket number: {target.ticket_number}")
+        today = datetime.now().strftime("%Y%m%d")
+        ticket_number = f"ARG-{today}-{next_number:04d}"
+        target.ticket_number = ticket_number
+        logger.info(f"🎫 [TICKET ASSIGN] Generated ticket number: {target.ticket_number}")
 
 
-def init_ticket_counter(db: Session):
+def init_ticket_counter(db_session):
     """
     Initialize the ticket counter if it doesn't exist
     """
-    counter = db.query(TicketCounter).filter_by(id=1).first()
+    counter = db_session.query(TicketCounter).first()
     if not counter:
-        counter = TicketCounter(id=1, last_number=0)
-        db.add(counter)
-        db.commit()
-        logger.info("Ticket counter initialized") 
+        counter = TicketCounter(last_number=0)
+        db_session.add(counter)
+        db_session.commit()
+        logger.info("🎫 [TICKET COUNTER] Ticket counter initialized") 
