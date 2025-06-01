@@ -343,10 +343,13 @@ def extract_sender_name_for_auto_reply(email_data, classification_data=None):
         elif isinstance(classification_data, dict):
             if 'ai_extracted_data' in classification_data:
                 ai_data = classification_data.get('ai_extracted_data', {})
-                ai_sender_name = ai_data.get('sender_name', '').strip()
+                raw_sender_name = ai_data.get('sender_name')
+                if raw_sender_name:  # Check if not None
+                    ai_sender_name = raw_sender_name.strip()
     
     # Try original email data sender_name
-    original_sender_name = email_data.get('sender_name', '').strip()
+    raw_original_name = email_data.get('sender_name', '')
+    original_sender_name = raw_original_name.strip() if raw_original_name else ''
     
     # Use the best available name
     full_name = None
@@ -381,10 +384,12 @@ def extract_email_body_for_auto_reply(email_data):
     body_options = ['body_text', 'text', 'body', 'message']
     
     for key in body_options:
-        body_content = email_data.get(key, '').strip()
-        if body_content:
-            logger.info(f"📤 [AUTO REPLY] Found email body using key '{key}' (length: {len(body_content)})")
-            return body_content
+        body_content = email_data.get(key)
+        if body_content:  # Check if not None
+            body_content = body_content.strip()
+            if body_content:  # Check if not empty after strip
+                logger.info(f"📤 [AUTO REPLY] Found email body using key '{key}' (length: {len(body_content)})")
+                return body_content
     
     # Fallback message if no body found
     logger.warning(f"📤 [AUTO REPLY] No email body content found in keys: {body_options}")
