@@ -81,6 +81,10 @@ async def test_gmail_fix():
             print("   2. Go to Activity Feed")
             print("   3. Look for 'Test Staffing Issue - Gmail Delivery Fix'")
             print("   4. Check if Gmail accepts it this time!")
+            print()
+            print("📊 Check Airtable for AI Summary and HR Categorization:")
+            print("   - AI Summary should contain a concise summary of the staffing issue")
+            print("   - Query Type should be categorized (likely 'General Inquiry' or 'Other')")
         else:
             print(f"❌ FAILED: {result.get('message', 'Unknown error')}")
             

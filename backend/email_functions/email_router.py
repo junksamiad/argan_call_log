@@ -134,6 +134,8 @@ class EmailRouter:
                     "urgency_keywords": urgency_keywords,
                     "sentiment_tone": email_data.sentiment_tone,
                     "deadline_mentions": deadline_mentions,
+                    "ai_summary": email_data.ai_summary,
+                    "hr_category": email_data.hr_category,
                     "dkim_status": email_data.dkim_status,
                     "spf_status": email_data.spf_status,
                     "ai_confidence": classification_result.confidence_score

@@ -90,6 +90,7 @@ def setup_airtable_table():
             # AI Classification Fields
             {"name": "AI Classification", "type": "singleLineText"},
             {"name": "AI Confidence", "type": "number"},
+            {"name": "AI Summary", "type": "multilineText"},  # AI-generated summary of email content
             {"name": "Urgency Keywords", "type": "multilineText"},  # JSON string
             {"name": "Sentiment Tone", "type": "singleLineText"},
             {"name": "AI Processing Timestamp", "type": "dateTime"},
@@ -98,6 +99,7 @@ def setup_airtable_table():
             # Conversation and Threading
             {"name": "Conversation History", "type": "multilineText"},  # JSON string
             {"name": "Message Count", "type": "number"},
+            {"name": "Last Message Date", "type": "dateTime"},
             {"name": "Is Initial Email", "type": "checkbox"},
             
             # Technical Fields
@@ -111,10 +113,15 @@ def setup_airtable_table():
                 "choices": [
                     {"name": "Leave Request"},
                     {"name": "Policy Question"},
+                    {"name": "Performance Management"},
+                    {"name": "Disciplinary"},
+                    {"name": "Employee Relations"},
+                    {"name": "Grievance"},
                     {"name": "Complaint"},
                     {"name": "Payroll"},
                     {"name": "Benefits"},
                     {"name": "Training"},
+                    {"name": "Recruitment"},
                     {"name": "General Inquiry"},
                     {"name": "Other"}
                 ]

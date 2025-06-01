@@ -14,6 +14,23 @@ class EmailClassification(str, Enum):
     EXISTING_EMAIL = "EXISTING_EMAIL"
 
 
+class HRCategory(str, Enum):
+    """HR domain categories matching Airtable Query Type field"""
+    LEAVE_REQUEST = "Leave Request"
+    POLICY_QUESTION = "Policy Question"
+    PERFORMANCE_MANAGEMENT = "Performance Management"
+    DISCIPLINARY = "Disciplinary"
+    EMPLOYEE_RELATIONS = "Employee Relations"
+    GRIEVANCE = "Grievance"
+    COMPLAINT = "Complaint"
+    PAYROLL = "Payroll"
+    BENEFITS = "Benefits"
+    TRAINING = "Training"
+    RECRUITMENT = "Recruitment"
+    GENERAL_INQUIRY = "General Inquiry"
+    OTHER = "Other"
+
+
 class ContactInfo(BaseModel):
     """Contact information extracted from email"""
     sender_email: str
@@ -89,6 +106,10 @@ class FlattenedEmailData(BaseModel):
     urgency_keywords_list: str = "[]"  # JSON string of keywords
     deadline_mentions_list: str = "[]"  # JSON string of deadlines
     sentiment_tone: Optional[str] = None
+    
+    # AI Analysis fields
+    ai_summary: Optional[str] = None  # AI-generated summary of email content
+    hr_category: Optional[str] = None  # HR domain categorization
     
     # Technical fields
     attachments_list: str = "[]"  # JSON string of attachment names

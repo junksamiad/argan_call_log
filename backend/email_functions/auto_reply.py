@@ -106,104 +106,114 @@ class AutoReplySender:
 # Standalone function for easy import
 _auto_reply_sender = None
 
-async def send_auto_reply(
-    recipient: str,
-    ticket_number: str,
-    original_subject: str = "",
-    sender_name: str = "",
-    priority: str = "Normal",
-    ai_summary: str = None,
-    cc_addresses: Optional[List[str]] = None
-) -> Dict[str, Any]:
+async def send_auto_reply(recipient, ticket_number, original_subject, sender_name="", 
+                         priority="Normal", ai_summary=None, original_email_body=None):
     """
-    Standalone function to send auto-reply emails
+    Send auto-reply email with ticket confirmation
     
     Args:
-        recipient: Email address to send to
+        recipient: Email address to send reply to
         ticket_number: Generated ticket number
-        original_subject: Original email subject
-        sender_name: Name of the sender
+        original_subject: Subject of original email
+        sender_name: Name of the sender (if available)
         priority: Priority level (Normal, High, Urgent)
-        ai_summary: AI-generated summary of the email
-        cc_addresses: Optional CC recipients
-        
-    Returns:
-        Dict with success status and details
+        ai_summary: AI-generated summary (optional)
+        original_email_body: Original email content for human review (optional)
     """
-    global _auto_reply_sender
-    
-    if _auto_reply_sender is None:
-        _auto_reply_sender = AutoReplySender()
-    
     try:
-        # Create auto-reply content
-        subject = f"[{ticket_number}] Thank you for contacting Argan Consultancy HR"
+        logger.info(f"📤 [AUTO REPLY] Preparing auto-reply for {recipient}")
         
-        # Build personalized content
-        greeting = f"Dear {sender_name}," if sender_name else "Dear valued team member,"
+        # Use sender name if available, otherwise fall back to email address
+        display_name = sender_name.strip() if sender_name and sender_name.strip() else recipient.split('@')[0]
         
+        # Ensure proper greeting format - using "Hi" for a more casual, friendly tone
+        greeting = f"Hi {display_name},"
+        
+        # Build email content
         text_content = f"""{greeting}
 
 Thank you for contacting Argan Consultancy HR. We have received your enquiry and assigned it ticket number {ticket_number}.
 
 Original Subject: {original_subject}
 Priority: {priority}
+Ticket Number: {ticket_number}
 
 We will review your request and respond within our standard timeframe:
-- Urgent matters: Within 4 hours
-- High priority: Within 24 hours  
-- Normal requests: Within 2-3 business days
 
-{f"Summary: {ai_summary}" if ai_summary else ""}
+• Urgent matters: Within 4 hours
+• High priority: Within 24 hours  
+• Normal requests: Within 2-3 business days
 
 If you need to follow up on this matter, please reference ticket number {ticket_number} in your subject line.
 
 Thank you for your patience.
 
 Best regards,
-Argan Consultancy HR Team
-"""
+Argan Consultancy HR Team"""
 
+        # Add original email body for human review if provided
+        if original_email_body and original_email_body.strip():
+            text_content += f"""
+
+------- ORIGINAL ENQUIRY -------
+{original_email_body.strip()}
+--------------------------------"""
+
+        # HTML version with better formatting
         html_content = f"""
-<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-    <h2 style="color: #2c3e50;">Argan Consultancy HR - Auto Reply</h2>
-    
-    <p>{greeting}</p>
-    
-    <p>Thank you for contacting Argan Consultancy HR. We have received your enquiry and assigned it ticket number <strong>{ticket_number}</strong>.</p>
-    
-    <div style="background-color: #f8f9fa; padding: 15px; border-left: 4px solid #007bff; margin: 20px 0;">
-        <p><strong>Original Subject:</strong> {original_subject}</p>
-        <p><strong>Priority:</strong> <span style="color: {'#dc3545' if priority == 'Urgent' else '#ffc107' if priority == 'High' else '#28a745'}">{priority}</span></p>
-        <p><strong>Ticket Number:</strong> {ticket_number}</p>
-    </div>
-    
-    <p>We will review your request and respond within our standard timeframe:</p>
-    <ul>
-        <li><strong>Urgent matters:</strong> Within 4 hours</li>
-        <li><strong>High priority:</strong> Within 24 hours</li>
-        <li><strong>Normal requests:</strong> Within 2-3 business days</li>
-    </ul>
-    
-    {f'<div style="background-color: #e8f5e8; padding: 10px; border-radius: 5px; margin: 15px 0;"><strong>Summary:</strong> {ai_summary}</div>' if ai_summary else ''}
-    
-    <p style="color: #6c757d; font-style: italic;">If you need to follow up on this matter, please reference ticket number {ticket_number} in your subject line.</p>
-    
-    <p>Thank you for your patience.</p>
-    
-    <p>Best regards,<br>
-    <strong>Argan Consultancy HR Team</strong></p>
-</div>
-"""
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <h2 style="color: #2c5aa0;">Argan Consultancy HR - Auto Reply</h2>
+            
+            <p>{greeting}</p>
+            
+            <p>Thank you for contacting Argan Consultancy HR. We have received your enquiry and assigned it ticket number <strong>{ticket_number}</strong>.</p>
+            
+            <div style="background-color: #f0f7ff; padding: 15px; border-left: 4px solid #2c5aa0; margin: 20px 0;">
+                <p><strong>Original Subject:</strong> {original_subject}</p>
+                <p><strong>Priority:</strong> <span style="color: #28a745;">{priority}</span></p>
+                <p><strong>Ticket Number:</strong> {ticket_number}</p>
+            </div>
+            
+            <p>We will review your request and respond within our standard timeframe:</p>
+            
+            <ul>
+                <li><strong>Urgent matters:</strong> Within 4 hours</li>
+                <li><strong>High priority:</strong> Within 24 hours</li>
+                <li><strong>Normal requests:</strong> Within 2-3 business days</li>
+            </ul>
+            
+            <p><em>If you need to follow up on this matter, please reference ticket number {ticket_number} in your subject line.</em></p>"""
+
+        # Add original email content for human review if provided
+        if original_email_body and original_email_body.strip():
+            html_content += f"""
+            <div style="margin-top: 30px; padding: 15px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px;">
+                <h4 style="color: #495057; margin-top: 0;">Original Enquiry (for reference):</h4>
+                <div style="font-family: 'Courier New', monospace; font-size: 12px; background-color: #ffffff; padding: 10px; border-radius: 3px; white-space: pre-wrap;">{original_email_body.strip()}</div>
+            </div>"""
+
+        html_content += """
+            <p>Thank you for your patience.</p>
+            
+            <p>Best regards,<br>
+            <strong>Argan Consultancy HR Team</strong></p>
+        </body>
+        </html>
+        """
+        
+        global _auto_reply_sender
+        
+        if _auto_reply_sender is None:
+            _auto_reply_sender = AutoReplySender()
         
         # Send the auto-reply
         return await _auto_reply_sender.send_auto_reply(
             to_email=recipient,
-            subject=subject,
+            subject=f"[{ticket_number}] Thank you for contacting Argan Consultancy HR",
             content_text=text_content,
             content_html=html_content,
-            ticket_number=ticket_number,
-            cc_addresses=cc_addresses
+            ticket_number=ticket_number
         )
         
     except Exception as e:

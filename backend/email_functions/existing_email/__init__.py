@@ -3,6 +3,6 @@ Existing Email Handling Package
 Handles replies to existing tickets and conversation threading
 """
 
-from .existing_email import ExistingEmailHandler
+from .existing_email import process_existing_email, process_reply_email
 
-__all__ = ['ExistingEmailHandler'] 
+__all__ = ['process_existing_email', 'process_reply_email'] 

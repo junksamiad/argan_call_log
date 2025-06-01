@@ -105,6 +105,11 @@ class WebhookHandler:
             Normalized email data dict
         """
         try:
+            # DEBUG: Log all webhook data to understand structure
+            logger.info("🐛 [DEBUG] Raw webhook data keys:")
+            for key in webhook_data.keys():
+                logger.info(f"🐛 [DEBUG] Key: {key} = {str(webhook_data[key])[:100]}...")
+            
             # Handle both single email and batch webhook formats
             if isinstance(webhook_data, list):
                 # Take the first email if it's a batch
@@ -117,6 +122,39 @@ class WebhookHandler:
             sender_email = self._extract_email_address(raw_sender)
             sender_name = self._extract_sender_name(raw_sender)
             
+            # Extract body content - try multiple field names first, then parse raw email
+            body_text = (
+                email_data.get('text', '') or 
+                email_data.get('body_text', '') or 
+                email_data.get('plain', '') or
+                email_data.get('body', '') or
+                ''
+            )
+            
+            body_html = (
+                email_data.get('html', '') or 
+                email_data.get('body_html', '') or 
+                email_data.get('htmlbody', '') or
+                ''
+            )
+            
+            # If no body found in standard fields, try to parse from raw email
+            if not body_text and not body_html and email_data.get('email'):
+                try:
+                    raw_email = email_data.get('email', '')
+                    parsed_body = self._parse_raw_email(raw_email)
+                    body_text = parsed_body.get('text', '')
+                    body_html = parsed_body.get('html', '')
+                    logger.info(f"🐛 [DEBUG] Parsed from raw email - Text: {len(body_text)}, HTML: {len(body_html)}")
+                except Exception as parse_error:
+                    logger.error(f"🐛 [DEBUG] Failed to parse raw email: {parse_error}")
+            
+            # DEBUG: Log body content extraction
+            logger.info(f"🐛 [DEBUG] Body text found: {len(body_text)} characters")
+            logger.info(f"🐛 [DEBUG] Body HTML found: {len(body_html)} characters")
+            if body_text:
+                logger.info(f"🐛 [DEBUG] Body text preview: {body_text[:200]}...")
+            
             # Normalize the email data structure
             normalized_data = {
                 'sender': sender_email,  # Now contains just the email address
@@ -126,8 +164,8 @@ class WebhookHandler:
                 'cc': email_data.get('cc', []),
                 'bcc': email_data.get('bcc', []),
                 'subject': email_data.get('subject', ''),
-                'body_text': email_data.get('text', ''),
-                'body_html': email_data.get('html', ''),
+                'body_text': body_text,
+                'body_html': body_html,
                 'message_id': email_data.get('message_id', ''),
                 'email_date': email_data.get('date', ''),
                 'attachments': email_data.get('attachments', []),
@@ -190,6 +228,57 @@ class WebhookHandler:
                 return ""
         except Exception:
             return ""
+    
+    def _parse_raw_email(self, raw_email: str) -> Dict[str, str]:
+        """
+        Parse raw email content to extract body text and HTML
+        
+        Args:
+            raw_email: Raw email message from SendGrid
+            
+        Returns:
+            Dict with 'text' and 'html' keys
+        """
+        try:
+            import email
+            from email import policy
+            
+            # Parse the raw email
+            msg = email.message_from_string(raw_email, policy=policy.default)
+            
+            body_text = ""
+            body_html = ""
+            
+            # Handle multipart messages
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    content_disposition = str(part.get("Content-Disposition", ""))
+                    
+                    # Skip attachments
+                    if "attachment" in content_disposition:
+                        continue
+                    
+                    if content_type == "text/plain":
+                        body_text = part.get_content()
+                    elif content_type == "text/html":
+                        body_html = part.get_content()
+            else:
+                # Single part message
+                content_type = msg.get_content_type()
+                if content_type == "text/plain":
+                    body_text = msg.get_content()
+                elif content_type == "text/html":
+                    body_html = msg.get_content()
+            
+            return {
+                'text': body_text or "",
+                'html': body_html or ""
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ [EMAIL PARSER] Error parsing raw email: {e}")
+            return {'text': "", 'html': ""}
     
     def clear_processed_cache(self):
         """Clear the processed messages cache"""
