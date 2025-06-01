@@ -31,6 +31,14 @@ class HRCategory(str, Enum):
     OTHER = "Other"
 
 
+class TicketLocation(str, Enum):
+    """Where ticket number was found in email"""
+    SUBJECT = "subject"
+    BODY = "body"
+    BOTH = "both"
+    NONE = "none"
+
+
 class ContactInfo(BaseModel):
     """Contact information extracted from email"""
     sender_email: str
@@ -68,7 +76,7 @@ class EmailContent(BaseModel):
 class TicketInfo(BaseModel):
     """Ticket-related information if found"""
     ticket_number: Optional[str] = None
-    ticket_found_in: Optional[str] = None  # "subject", "body", or "both"
+    ticket_found_in: Optional[TicketLocation] = None  # Now uses enum
     confidence_score: float = 0.0  # AI confidence in ticket detection
     context_around_ticket: Optional[str] = None  # Text surrounding ticket reference
 
@@ -99,17 +107,17 @@ class FlattenedEmailData(BaseModel):
     
     # Ticket fields
     ticket_number: Optional[str] = None
-    ticket_found_in: Optional[str] = None
+    ticket_found_in: Optional[TicketLocation] = None  # Now uses enum constraint
     ticket_confidence: float = 0.0
     
     # Urgency fields
-    urgency_keywords_list: str = "[]"  # JSON string of keywords
-    deadline_mentions_list: str = "[]"  # JSON string of deadlines
-    sentiment_tone: Optional[str] = None
+    urgency_keywords_list: str = "[]"  # JSON string of keywords (kept flexible)
+    deadline_mentions_list: str = "[]"  # JSON string of deadlines (kept flexible)
+    sentiment_tone: Optional[str] = None  # Kept flexible for AI descriptive analysis
     
     # AI Analysis fields
     ai_summary: Optional[str] = None  # AI-generated summary of email content
-    hr_category: Optional[str] = None  # HR domain categorization
+    hr_category: Optional[HRCategory] = None  # Now uses enum constraint - FIXED!
     
     # Technical fields
     attachments_list: str = "[]"  # JSON string of attachment names

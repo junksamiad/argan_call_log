@@ -59,12 +59,12 @@ Example summaries:
 - "New hire inquiring about health insurance enrollment deadline. Needs clarification on coverage options and documentation requirements."
 
 ## HR Categorization
-Categorize emails into these HR domains based on content:
+Categorize emails into these HR domains based on content. **You MUST use these EXACT category names**:
 - **Performance Management**: Performance reviews, improvement plans, productivity concerns, quality of work issues, goal setting, career development discussions
 - **Disciplinary**: Misconduct, attendance issues, policy violations, formal warnings, disciplinary hearings, suspension matters
 - **Employee Relations**: Workplace conflicts, team disputes, communication issues, interpersonal problems between staff
 - **Grievance**: Formal employee complaints, appeals, unfair treatment allegations, whistleblowing
-- **Leave Request**: Vacation, sick leave, parental leave, bereavement, FMLA, time off requests
+- **Leave Request**: Vacation, sick leave, parental leave, bereavement, FMLA, time off requests, sickness absence management
 - **Policy Question**: Handbook inquiries, procedure clarifications, compliance questions, process guidance
 - **Complaint**: General complaints, concerns about services, facilities, or processes (non-employment related)
 - **Payroll**: Salary questions, overtime, deductions, tax forms, pay discrepancies, compensation issues
@@ -74,11 +74,24 @@ Categorize emails into these HR domains based on content:
 - **General Inquiry**: Information requests, process questions, general HR support, contact requests
 - **Other**: Anything that doesn't fit the above categories clearly
 
+**CRITICAL: Use the exact category name as listed above. For example:**
+- Staff sickness issues → "Leave Request" (NOT "Absence/Leave Request" or "Sickness Management")
+- Performance problems → "Performance Management" (NOT "Performance Issues")
+- Workplace disputes → "Employee Relations" (NOT "Staff Relations")
+
 **Key Examples:**
 - "Employee has punctuality and performance issues, need guidance on improvement plan" → Performance Management
 - "Employee violated company policy by arriving intoxicated" → Disciplinary
 - "Two team members are having ongoing conflicts" → Employee Relations
 - "I want to file a formal complaint about my manager's treatment" → Grievance
+- "Staff member needs time off for surgery" → Leave Request
+
+## Ticket Location Detection
+If you find a ticket number, specify where it was found using these EXACT values:
+- **subject**: Ticket found in email subject line only
+- **body**: Ticket found in email body only
+- **both**: Ticket found in both subject and body
+- **none**: No ticket found (for NEW_EMAIL classification)
 
 ## Context Awareness
 - Look for ticket numbers in subject line AND email body
