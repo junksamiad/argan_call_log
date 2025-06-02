@@ -15,9 +15,8 @@ logger = logging.getLogger(__name__)
 class AutoReplySender:
     def __init__(self):
         self.email_service = EmailService()
-        # TEMPORARILY DISABLED FOR TESTING - Comment out CC functionality
-        # self.default_cc_addresses = ["advice@arganconsultancy.co.uk"]  # Default CC recipients
-        self.default_cc_addresses = []  # Disabled during testing
+        # Default CC recipients for auto-reply emails
+        self.default_cc_addresses = ["lee.hayton@adaptixinnovation.co.uk"]
     
     async def send_auto_reply(
         self,
@@ -50,10 +49,8 @@ class AutoReplySender:
                 logger.info(f"📤 [AUTO REPLY] Waiting {delay_seconds}s before sending to {to_email}")
                 await asyncio.sleep(delay_seconds)
                 
-            # TEMPORARILY DISABLED FOR TESTING - Comment out CC functionality
             # Use provided CC addresses or default ones
-            # cc_list = cc_addresses or self.default_cc_addresses
-            cc_list = []  # Disabled during testing
+            cc_list = cc_addresses or self.default_cc_addresses
             
             # Send the main email
             result = await self.email_service.send_hr_response(
@@ -61,7 +58,8 @@ class AutoReplySender:
                 subject=subject,
                 content_text=content_text,
                 content_html=content_html,
-                ticket_number=ticket_number
+                ticket_number=ticket_number,
+                cc_addresses=cc_list
             )
             
             # Log detailed results
@@ -69,8 +67,11 @@ class AutoReplySender:
                 logger.error(f"Email service returned failure for {to_email}")
                 logger.error(f"Failure details: {result}")
             
-            # TEMPORARILY DISABLED FOR TESTING - Comment out CC sending
-            logger.info(f"📧 [AUTO REPLY] CC functionality temporarily disabled for testing")
+            # Log CC recipients if any were used
+            if cc_list:
+                logger.info(f"📧 [AUTO REPLY] Email sent with CC to: {cc_list}")
+            else:
+                logger.info(f"📧 [AUTO REPLY] Email sent with no CC recipients")
             
             return result
             

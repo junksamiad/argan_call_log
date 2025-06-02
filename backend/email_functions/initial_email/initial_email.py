@@ -49,6 +49,20 @@ def create_initial_conversation_entry(email_data, classification_data=None):
         elif isinstance(classification_data, dict) and 'ai_extracted_data' in classification_data:
             ai_summary = classification_data['ai_extracted_data'].get('ai_summary')
     
+    # Extract AI-extracted query (no more body_text fallbacks)
+    query_content = ""
+    
+    # Get AI-extracted query only
+    if classification_data:
+        if isinstance(classification_data, dict) and 'ai_extracted_data' in classification_data:
+            query_content = classification_data['ai_extracted_data'].get('query', '')
+        elif hasattr(classification_data, 'EMAIL_DATA'):
+            query_content = classification_data.EMAIL_DATA.query or ''
+    
+    # No fallback to body_text - if AI didn't extract query, use diagnostic message
+    if not query_content or query_content.strip() == '':
+        query_content = "AI_QUERY_EXTRACTION_FAILED"
+    
     # Create the initial conversation entry
     conversation_entry = {
         "message_id": generate_message_id(email_data),
@@ -59,8 +73,8 @@ def create_initial_conversation_entry(email_data, classification_data=None):
         "source": "direct",
         "extracted_from": None,
         "subject": email_data.get('subject', ''),
-        "body_text": email_data.get('body_text', ''),
-        "content_hash": generate_content_hash(email_data.get('body_text', '')),
+        "query": query_content,  # Now uses only AI-extracted query
+        "content_hash": generate_content_hash(query_content),
         "thread_position": 1,
         "ai_summary": ai_summary,
         "priority": "Normal"
@@ -84,24 +98,21 @@ async def process_initial_email(email_data, classification_data=None):
         # Initialize Airtable service
         airtable = AirtableService()
         
-        # DEDUPLICATION: Check if this email already exists
-        message_id = email_data.get('message_id', '')
+        # DEDUPLICATION: Check if this email already exists (removed Message-ID check)
         sender = email_data.get('sender', '')
         subject = email_data.get('subject', '')
         
-        if message_id or (sender and subject):
-            # Search for existing records with same identifiers
+        if sender and subject:
+            # Search for existing records with same sender+subject combination
             existing_records = airtable.table.all()
             for record in existing_records:
                 fields = record['fields']
-                existing_message_id = fields.get('Message ID', '')
                 existing_sender = fields.get('Sender Email', '')
                 existing_subject = fields.get('Subject', '')
                 
-                # Check for exact match by message ID or sender+subject combination
-                if (message_id and existing_message_id == message_id) or \
-                   (sender == existing_sender and subject == existing_subject):
-                    logger.warning(f"🔄 [DEDUP] Found existing record {fields.get('Ticket Number', 'Unknown')} for this email")
+                # Check for exact match by sender+subject combination only
+                if sender == existing_sender and subject == existing_subject:
+                    logger.warning(f"🔄 [DEDUP] Found existing record {fields.get('Ticket Number', 'Unknown')} for this email (sender+subject match)")
                     
                     # If this record doesn't have AI data but we have it now, update it
                     if classification_data and not fields.get('AI Summary'):
@@ -109,7 +120,7 @@ async def process_initial_email(email_data, classification_data=None):
                         
                         # Extract proper sender name and email body for auto-reply
                         sender_name = extract_sender_name_for_auto_reply(email_data, classification_data)
-                        original_email_body = extract_email_body_for_auto_reply(email_data)
+                        original_email_body = extract_email_body_for_auto_reply(email_data, classification_data)
                         
                         # Update the record with AI data
                         ai_data = classification_data.get('ai_extracted_data', {}) if isinstance(classification_data, dict) else {}
@@ -196,7 +207,7 @@ async def process_initial_email(email_data, classification_data=None):
         
         # Extract proper sender name and email body for auto-reply
         sender_name = extract_sender_name_for_auto_reply(email_data, classification_data)
-        original_email_body = extract_email_body_for_auto_reply(email_data)
+        original_email_body = extract_email_body_for_auto_reply(email_data, classification_data)
         
         logger.info(f"📤 [AUTO REPLY] Using sender name: '{sender_name}' and body length: {len(original_email_body) if original_email_body else 0}")
         
@@ -222,7 +233,7 @@ async def process_initial_email(email_data, classification_data=None):
             
         except Exception as e:
             logger.error(f"❌ [AUTO REPLY] Failed to send auto-reply: {e}")
-        
+            
         return {
             "success": True,
             "ticket_number": ticket_number,
@@ -231,7 +242,7 @@ async def process_initial_email(email_data, classification_data=None):
             "ai_classification": classification_data.get('EMAIL_CLASSIFICATION') if classification_data else None,
             "ai_confidence": classification_data.get('confidence_score') if classification_data else None
         }
-        
+            
     except Exception as e:
         logger.error(f"Error processing new email: {e}")
         raise Exception(f"Failed to process new email: {e}")
@@ -375,25 +386,28 @@ def extract_sender_name_for_auto_reply(email_data, classification_data=None):
     return "there"  # Fallback greeting like "Hi there," if no name found
 
 
-def extract_email_body_for_auto_reply(email_data):
+def extract_email_body_for_auto_reply(email_data, classification_data=None):
     """
     Extract the email body content for inclusion in auto-reply
-    Priority: body_text > text > fallback message
+    Only uses AI-extracted query - no body_text fallbacks
     """
-    # Try different possible keys for email body
-    body_options = ['body_text', 'text', 'body', 'message']
+    # Use AI-extracted clean query only
+    if classification_data:
+        ai_query = None
+        
+        # Get AI query from classification data
+        if isinstance(classification_data, dict) and 'ai_extracted_data' in classification_data:
+            ai_query = classification_data['ai_extracted_data'].get('query', '')
+        elif hasattr(classification_data, 'EMAIL_DATA'):
+            ai_query = classification_data.EMAIL_DATA.query
+        
+        if ai_query and ai_query.strip():
+            logger.info(f"📤 [AUTO REPLY] Using AI-extracted query (length: {len(ai_query)})")
+            return ai_query.strip()
     
-    for key in body_options:
-        body_content = email_data.get(key)
-        if body_content:  # Check if not None
-            body_content = body_content.strip()
-            if body_content:  # Check if not empty after strip
-                logger.info(f"📤 [AUTO REPLY] Found email body using key '{key}' (length: {len(body_content)})")
-                return body_content
-    
-    # Fallback message if no body found
-    logger.warning(f"📤 [AUTO REPLY] No email body content found in keys: {body_options}")
-    return "Original email content was not available."
+    # No body_text fallbacks - use diagnostic message
+    logger.warning(f"📤 [AUTO REPLY] No AI-extracted query available")
+    return "AI_QUERY_EXTRACTION_FAILED"
 
 
 # Keep backward compatibility

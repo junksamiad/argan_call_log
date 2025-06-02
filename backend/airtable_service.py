@@ -48,7 +48,6 @@ class AirtableService:
                 "Sender Email": email_data.get('sender'),
                 "Sender Name": email_data.get('sender_name', ''),
                 "Subject": email_data.get('subject', ''),
-                "Body Text": email_data.get('body_text', ''),
                 "Body HTML": email_data.get('body_html', ''),
                 "Message ID": email_data.get('message_id', ''),
                 "Email Date": self._format_datetime(email_data.get('email_date')),
@@ -62,6 +61,61 @@ class AirtableService:
                 "DKIM Status": email_data.get('dkim', ''),
                 "SPF Status": email_data.get('spf', '')
             }
+            
+            # DEBUG: Log the Message ID being stored
+            message_id = email_data.get('message_id', '')
+            logger.info(f"🐛 [AIRTABLE DEBUG] Message ID to store: '{message_id}' (length: {len(message_id)})")
+            if not message_id:
+                logger.warning(f"🐛 [AIRTABLE DEBUG] ⚠️ Message ID is empty! Email data keys: {list(email_data.keys())}")
+            else:
+                logger.info(f"🐛 [AIRTABLE DEBUG] ✅ Message ID found: {message_id}")
+            
+            # Process attachment data
+            attachments = email_data.get('attachments', [])
+            attachment_count = 0
+            attachment_names = []
+            
+            if attachments:
+                try:
+                    # Handle attachments count (SendGrid sends as string)
+                    if isinstance(attachments, str) and attachments.isdigit():
+                        attachment_count = int(attachments)
+                    elif isinstance(attachments, list):
+                        attachment_count = len(attachments)
+                        attachment_names = [att.get('filename', 'unnamed') for att in attachments if isinstance(att, dict)]
+                    
+                    # Look for attachment-info field with metadata
+                    attachment_info = email_data.get('attachment-info', '')
+                    if attachment_info:
+                        try:
+                            if isinstance(attachment_info, str):
+                                attachment_metadata = json.loads(attachment_info)
+                            else:
+                                attachment_metadata = attachment_info
+                            
+                            # Extract filenames from attachment metadata
+                            for key, info in attachment_metadata.items():
+                                if isinstance(info, dict) and 'filename' in info:
+                                    attachment_names.append(info['filename'])
+                            
+                            # Update count if we got more info from metadata
+                            if len(attachment_names) > attachment_count:
+                                attachment_count = len(attachment_names)
+                                
+                        except json.JSONDecodeError:
+                            logger.warning(f"📎 [ATTACHMENTS] Failed to parse attachment-info: {attachment_info}")
+                    
+                    logger.info(f"📎 [ATTACHMENTS] Found {attachment_count} attachments: {attachment_names}")
+                    
+                except Exception as e:
+                    logger.error(f"📎 [ATTACHMENTS] Error processing attachments: {e}")
+            
+            # Add attachment data to record
+            record_data.update({
+                "Has Attachments": attachment_count > 0,
+                "Attachment Count": attachment_count,
+                "Attachment Names": json.dumps(attachment_names) if attachment_names else "[]"
+            })
             
             # Add AI classification data if available
             if classification_data:
@@ -104,6 +158,7 @@ class AirtableService:
                     "AI Classification": classification_data.get('EMAIL_CLASSIFICATION', ''),
                     "AI Confidence": classification_data.get('confidence_score', 0),
                     "AI Summary": ai_data.get('ai_summary', ''),  # Now should get the AI summary
+                    "Query": ai_data.get('query', ''),  # AI-extracted clean customer query
                     "Urgency Keywords": json.dumps(ai_data.get('urgency_keywords_list', ai_data.get('urgency_keywords', []))),
                     "Sentiment Tone": ai_data.get('sentiment_tone', ''),
                     "AI Processing Timestamp": self._format_datetime(classification_data.get('processing_timestamp')),
@@ -186,7 +241,7 @@ class AirtableService:
                 "sender": new_message_data.get('sender'),
                 "message_id": new_message_data.get('message_id'),
                 "subject": new_message_data.get('subject'),
-                "body_text": new_message_data.get('body_text'),
+                "query": new_message_data.get('query', 'AI_EXTRACTION_FAILED'),
                 "message_type": "Reply"
             }
             
@@ -299,13 +354,28 @@ class AirtableService:
                 logger.error(f"❌ [AIRTABLE] Cannot update conversation - ticket {ticket_number} not found")
                 return None
             
-            # Prepare update data
+            # Get current Message ID field value
+            current_message_ids = existing_record['fields'].get('Message ID', '')
+            
+            # Extract new Message-ID from email_data
+            new_message_id = email_data.get('message_id', '') if email_data else ''
+            
+            # Append new Message-ID if it exists and isn't already in the list
+            updated_message_ids = current_message_ids
+            if new_message_id and new_message_id not in current_message_ids:
+                if current_message_ids:
+                    updated_message_ids = f"{current_message_ids}, {new_message_id}"
+                else:
+                    updated_message_ids = new_message_id
+                logger.info(f"📧 [MESSAGE-ID] Appending new Message-ID: {new_message_id}")
+            
+            # Prepare update data (only include fields that exist in Airtable schema)
             update_data = {
                 "Conversation History": json.dumps(conversation_history),
                 "Last Updated": datetime.utcnow().isoformat(),
                 "Status": "In Progress",  # Update status since there's new activity
-                "Last Message Date": email_data.get('email_date', datetime.utcnow().isoformat()),
-                "Message Count": len(conversation_history)
+                "Message Count": len(conversation_history),
+                "Message ID": updated_message_ids  # Append new Message-ID to existing list
             }
             
             # Update the record
@@ -346,7 +416,7 @@ class AirtableService:
                 "message_id": f"msg_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
                 "timestamp": new_message_data.get('email_date', datetime.utcnow().isoformat()),
                 "sender": new_message_data.get('sender', ''),
-                "body_text": new_message_data.get('body_text', ''),
+                "query": new_message_data.get('query', 'AI_EXTRACTION_FAILED'),
                 "message_type": "reply",
                 "thread_position": len(existing_conversation) + 1
             }

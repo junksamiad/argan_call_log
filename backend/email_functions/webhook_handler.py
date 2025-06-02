@@ -166,7 +166,7 @@ class WebhookHandler:
                 'subject': email_data.get('subject', ''),
                 'body_text': body_text,
                 'body_html': body_html,
-                'message_id': email_data.get('message_id', ''),
+                'message_id': self._extract_message_id(email_data),
                 'email_date': email_data.get('date', ''),
                 'attachments': email_data.get('attachments', []),
                 'dkim': email_data.get('dkim', 'unknown'),
@@ -279,6 +279,88 @@ class WebhookHandler:
         except Exception as e:
             logger.error(f"❌ [EMAIL PARSER] Error parsing raw email: {e}")
             return {'text': "", 'html': ""}
+    
+    def _extract_message_id(self, email_data: Dict[str, Any]) -> str:
+        """
+        Extract Message-ID from email headers
+        
+        Args:
+            email_data: Email data from SendGrid webhook
+            
+        Returns:
+            Message-ID if found, empty string otherwise
+        """
+        try:
+            # DEBUG: Log all available fields in email_data
+            logger.info(f"🐛 [MESSAGE-ID DEBUG] Available email_data keys: {list(email_data.keys())}")
+            
+            # First check if there's a direct message_id field (unlikely with SendGrid)
+            if email_data.get('message_id'):
+                logger.info(f"📧 [WEBHOOK] Found direct message_id field: {email_data.get('message_id')}")
+                return email_data.get('message_id', '')
+            
+            # SendGrid provides the raw email in the 'email' field - extract Message-ID from there
+            raw_email = email_data.get('email', '')
+            if raw_email:
+                logger.info(f"🐛 [MESSAGE-ID DEBUG] Raw email content length: {len(raw_email)}")
+                
+                # Look for Message-ID in the raw email headers
+                import re
+                
+                # Try multiple Message-ID patterns to handle different email providers
+                patterns = [
+                    # Standard format with angle brackets: Message-ID: <abc123@gmail.com>
+                    r'Message-ID:\s*<([^>]+)>',
+                    # Without angle brackets: Message-ID: abc123@gmail.com
+                    r'Message-ID:\s*([^\r\n\s<>]+)',
+                    # Case variations and extra whitespace
+                    r'message-id:\s*<([^>]+)>',
+                    r'message-id:\s*([^\r\n\s<>]+)',
+                    # X-Message-ID (sometimes used)
+                    r'X-Message-ID:\s*<([^>]+)>',
+                    r'X-Message-ID:\s*([^\r\n\s<>]+)'
+                ]
+                
+                for i, pattern in enumerate(patterns):
+                    match = re.search(pattern, raw_email, re.IGNORECASE | re.MULTILINE)
+                    if match:
+                        message_id = match.group(1).strip()
+                        # Clean up common formatting issues
+                        message_id = message_id.strip('<>').strip()
+                        logger.info(f"📧 [WEBHOOK] ✅ Extracted Message-ID (pattern {i+1}): {message_id}")
+                        
+                        # Log the email provider for debugging
+                        if '@gmail.com' in message_id:
+                            logger.info(f"📧 [PROVIDER] Detected Gmail Message-ID")
+                        elif '@outlook.com' in message_id or '@hotmail.com' in message_id:
+                            logger.info(f"📧 [PROVIDER] Detected Microsoft Message-ID")
+                        elif '@yahoo.com' in message_id:
+                            logger.info(f"📧 [PROVIDER] Detected Yahoo Message-ID")
+                        else:
+                            logger.info(f"📧 [PROVIDER] Message-ID from: {message_id.split('@')[-1] if '@' in message_id else 'Unknown'}")
+                        
+                        return message_id
+                
+                logger.warning("📧 [WEBHOOK] ⚠️ No Message-ID found in raw email content")
+            else:
+                logger.warning("📧 [WEBHOOK] ⚠️ No raw email content available for Message-ID extraction")
+            
+            # Fallback: Check for headers field (legacy support)
+            headers = email_data.get('headers', '')
+            if headers:
+                logger.info(f"🐛 [MESSAGE-ID DEBUG] Found headers field, length: {len(str(headers))}")
+                match = re.search(r'Message-ID:\s*<([^>]+)>', str(headers), re.IGNORECASE)
+                if match:
+                    message_id = match.group(1).strip()
+                    logger.info(f"📧 [WEBHOOK] ✅ Extracted Message-ID from headers: {message_id}")
+                    return message_id
+            
+            logger.warning("📧 [WEBHOOK] ⚠️ No Message-ID found in any available source")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"📧 [WEBHOOK] ❌ Error extracting Message-ID: {e}")
+            return ""
     
     def clear_processed_cache(self):
         """Clear the processed messages cache"""

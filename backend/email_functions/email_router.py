@@ -5,6 +5,7 @@ Routes emails based on AI classification and processes them accordingly
 
 import logging
 import asyncio
+import re
 from typing import Dict, Any, Optional
 from .classification.email_classifier_agent import EmailClassifierAgent
 from .initial_email.initial_email import process_initial_email
@@ -21,9 +22,47 @@ class EmailRouter:
         self.ai_classifier = EmailClassifierAgent()
         logger.info("📬 [EMAIL ROUTER] Initialized with AI classification")
     
+    def extract_ticket_number(self, email_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract ticket number from email subject or content before AI classification
+        
+        Args:
+            email_data: Email data from SendGrid webhook
+            
+        Returns:
+            Ticket number if found, None otherwise
+        """
+        try:
+            subject = email_data.get('subject', '')
+            body_text = email_data.get('body_text', '')
+            
+            # Look for ticket number pattern: ARG-YYYYMMDD-NNNN
+            ticket_pattern = r'ARG-\d{8}-\d{4}'
+            
+            # Check subject first (most common location)
+            subject_match = re.search(ticket_pattern, subject)
+            if subject_match:
+                ticket_number = subject_match.group(0)
+                logger.info(f"🎫 [TICKET EXTRACTOR] Found ticket in subject: {ticket_number}")
+                return ticket_number
+            
+            # Check body text as fallback
+            body_match = re.search(ticket_pattern, body_text)
+            if body_match:
+                ticket_number = body_match.group(0)
+                logger.info(f"🎫 [TICKET EXTRACTOR] Found ticket in body: {ticket_number}")
+                return ticket_number
+            
+            logger.info("🎫 [TICKET EXTRACTOR] No ticket number found")
+            return None
+            
+        except Exception as e:
+            logger.error(f"🎫 [TICKET EXTRACTOR] Error extracting ticket: {e}")
+            return None
+    
     async def route_email(self, email_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Route an email based on AI classification
+        Route an email based on ticket number extraction, then AI classification
         
         Args:
             email_data: Email data from SendGrid webhook
@@ -37,8 +76,29 @@ class EmailRouter:
             
             logger.info(f"📬 [EMAIL ROUTER] Routing email from {sender} with subject: {subject}")
             
-            # Step 1: AI Classification
-            logger.info("🤖 [EMAIL ROUTER] Starting AI classification...")
+            # Step 1: Simple ticket number extraction (pre-AI check)
+            logger.info("🎫 [EMAIL ROUTER] Checking for existing ticket number...")
+            logger.info(f"🎫 [EMAIL ROUTER] Subject to check: '{subject}'")
+            ticket_number = self.extract_ticket_number(email_data)
+            
+            if ticket_number:
+                # Found ticket number - route to existing email handler
+                logger.info(f"🎫 [EMAIL ROUTER] → Existing email handler (found ticket: {ticket_number})")
+                
+                # Create classification dict for existing email
+                classification_dict = {
+                    "EMAIL_CLASSIFICATION": "EXISTING_EMAIL",
+                    "confidence_score": 1.0,  # 100% confident since we found ticket number
+                    "ai_extracted_data": {
+                        "ticket_number": ticket_number
+                    },
+                    "notes": f"Ticket number extracted from email: {ticket_number}"
+                }
+                
+                return await process_existing_email(email_data, classification_dict)
+            
+            # Step 2: No ticket number found - proceed with AI Classification for new emails
+            logger.info("🤖 [EMAIL ROUTER] No ticket found, starting AI classification for new email...")
             classification_result = await self.ai_classifier.classify_email(email_data)
             
             classification = classification_result.EMAIL_CLASSIFICATION
@@ -50,13 +110,15 @@ class EmailRouter:
             # Convert to dict for compatibility with handlers
             classification_dict = self._convert_classification_to_dict(classification_result)
             
-            # Step 2: Route based on classification
+            # Step 3: Route based on AI classification (should mostly be NEW_EMAIL at this point)
             if classification == EmailClassification.NEW_EMAIL:
                 logger.info("🆕 [EMAIL ROUTER] → Initial email handler (new ticket)")
                 return await process_initial_email(email_data, classification_dict)
                 
             elif classification == EmailClassification.EXISTING_EMAIL:
-                logger.info("💬 [EMAIL ROUTER] → Existing email handler (reply)")
+                # This shouldn't happen often since we already checked for ticket numbers
+                logger.warning("💬 [EMAIL ROUTER] AI classified as EXISTING but no ticket found earlier")
+                logger.info("💬 [EMAIL ROUTER] → Existing email handler (AI classification)")
                 return await process_existing_email(email_data, classification_dict)
                 
             else:
@@ -125,7 +187,7 @@ class EmailRouter:
                     "sender_domain": email_data.sender_domain,
                     "recipients_list": recipients,
                     "subject": email_data.subject,
-                    "body_text": email_data.body_text,
+                    "query": email_data.query,
                     "body_html": email_data.body_html,
                     "message_id": email_data.message_id,
                     "email_date": email_data.email_date,

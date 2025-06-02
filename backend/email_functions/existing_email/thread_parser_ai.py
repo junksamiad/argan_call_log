@@ -11,16 +11,32 @@ import re
 from datetime import datetime
 from typing import List, Dict, Any
 from openai import OpenAI
+from pydantic import BaseModel
 import os
 
 logger = logging.getLogger(__name__)
+
+
+class ParsedMessage(BaseModel):
+    """Schema for a single parsed message from an email thread"""
+    sender: str
+    sender_name: str = ""
+    timestamp: str
+    subject: str = ""
+    query: str  # AI-extracted message content
+    message_type: str = "reply"  # initial, reply, forward
+
+
+class ThreadParseResponse(BaseModel):
+    """Schema for the complete thread parsing response"""
+    messages: List[ParsedMessage]
 
 
 class ThreadParserAI:
     def __init__(self):
         """Initialize the Thread Parser AI agent"""
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = "gpt-4o"
+        self.model = "gpt-4.1"
         logger.info("🧵 [THREAD PARSER AI] Initialized")
 
     def _build_thread_parsing_prompt(self) -> str:
@@ -45,37 +61,29 @@ For each message in the thread, extract:
 - **Outlook**: Uses "From: [sender], Sent: [date], To: [recipient], Subject: [subject]"
 - **Generic**: Look for patterns like "-----Original Message-----", "> ", ">>", etc.
 
-## Deduplication
+## Deduplication Rules
 - Extract only unique message content
 - Ignore auto-generated signatures, disclaimers, footers
 - Focus on the actual human-written content
+- Don't include quoted content unless it's part of the actual new message
 
-## Output Format
-Return a JSON array of message objects:
-```json
-[
-  {
-    "sender": "sender@example.com",
-    "sender_name": "John Doe",
-    "timestamp": "2024-06-01T15:30:00Z",
-    "subject": "Original subject",
-    "body_text": "The actual message content only",
-    "message_type": "initial|reply|forward",
-    "source": "extracted",
-    "content_hash": "unique_hash",
-    "thread_position": 1
-  }
-]
-```
-
-## Important Rules
+## Important Parsing Rules
 1. **Latest message first** - The most recent message is usually at the top
 2. **Strip quoted content** - Don't include ">" prefixed content unless it's part of the actual message
-3. **Preserve chronological order** - Arrange messages by timestamp
+3. **Preserve chronological order** - Arrange messages by timestamp (oldest first)
 4. **Handle malformed content** - Some email clients mangle formatting
 5. **Ignore signatures** - Filter out email signatures and legal disclaimers
+6. **Extract sender emails** - Always include the email address, extract name if available
+7. **Normalize timestamps** - Convert to ISO format (YYYY-MM-DDTHH:MM:SSZ)
 
-Extract ALL messages you can identify in the thread, even if formatting is inconsistent.
+## Message Types
+- **initial**: The first message that started the conversation
+- **reply**: A response to a previous message
+- **forward**: A forwarded message
+
+Extract ALL messages you can identify in the thread, even if formatting is inconsistent. If you can only find one message (the current one), return just that single message.
+
+Return the messages in chronological order (oldest first).
 """
 
     async def parse_email_thread(self, email_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -95,10 +103,10 @@ Extract ALL messages you can identify in the thread, even if formatting is incon
             email_content = self._prepare_thread_content(email_data)
             
             # Call OpenAI to parse the thread
-            parsed_messages = await self._call_openai_thread_parser(email_content)
+            parsed_response = await self._call_openai_thread_parser(email_content)
             
             # Post-process and enhance the messages
-            enhanced_messages = self._enhance_parsed_messages(parsed_messages, email_data)
+            enhanced_messages = self._enhance_parsed_messages(parsed_response.messages, email_data)
             
             logger.info(f"🧵 [THREAD PARSER] Extracted {len(enhanced_messages)} messages from thread")
             return enhanced_messages
@@ -119,17 +127,14 @@ To: {email_data.get('recipients', [])}
 Subject: {email_data.get('subject', 'No Subject')}
 Date: {email_data.get('email_date', 'Unknown')}
 
-BODY TEXT:
-{email_data.get('body_text', 'No text content')}
-
-BODY HTML (if different):
+BODY HTML:
 {email_data.get('body_html', 'No HTML content')}
 
 PARSE THIS EMAIL THREAD AND EXTRACT ALL INDIVIDUAL MESSAGES.
 """
 
-    async def _call_openai_thread_parser(self, thread_content: str) -> List[Dict[str, Any]]:
-        """Call OpenAI to parse the email thread"""
+    async def _call_openai_thread_parser(self, thread_content: str) -> ThreadParseResponse:
+        """Call OpenAI to parse the email thread using structured outputs"""
         try:
             response = self.client.responses.parse(
                 model=self.model,
@@ -143,33 +148,32 @@ PARSE THIS EMAIL THREAD AND EXTRACT ALL INDIVIDUAL MESSAGES.
                         "content": thread_content
                     }
                 ],
-                text_format="json"  # Request JSON output
+                text_format=ThreadParseResponse
             )
             
-            # Parse the JSON response
-            parsed_data = json.loads(response.output_parsed)
-            return parsed_data if isinstance(parsed_data, list) else []
+            return response.output_parsed
             
         except Exception as e:
             logger.error(f"🧵 [THREAD PARSER] OpenAI API error: {e}")
-            return []
+            # Return empty response that will trigger fallback
+            return ThreadParseResponse(messages=[])
 
-    def _enhance_parsed_messages(self, parsed_messages: List[Dict[str, Any]], email_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _enhance_parsed_messages(self, parsed_messages: List[ParsedMessage], email_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Enhance parsed messages with additional metadata"""
         enhanced = []
         
         for i, message in enumerate(parsed_messages):
             enhanced_message = {
-                "message_id": self._generate_message_id(message, email_data),
-                "timestamp": self._normalize_timestamp(message.get('timestamp')),
-                "sender": message.get('sender', 'unknown@unknown.com'),
-                "sender_name": message.get('sender_name', ''),
-                "message_type": message.get('message_type', 'reply'),
+                "message_id": self._generate_message_id(message.dict(), email_data),
+                "timestamp": self._normalize_timestamp(message.timestamp),
+                "sender": message.sender,
+                "sender_name": message.sender_name,
+                "message_type": message.message_type,
                 "source": "extracted",
                 "extracted_from": email_data.get('message_id', ''),
-                "subject": message.get('subject', email_data.get('subject', '')),
-                "body_text": message.get('body_text', ''),
-                "content_hash": self._generate_content_hash(message.get('body_text', '')),
+                "subject": message.subject or email_data.get('subject', ''),
+                "query": message.query,  # AI-extracted content
+                "content_hash": self._generate_content_hash(message.query),
                 "thread_position": i + 1,  # Will be updated during merge
                 "priority": "Normal"
             }
@@ -179,7 +183,7 @@ PARSE THIS EMAIL THREAD AND EXTRACT ALL INDIVIDUAL MESSAGES.
 
     def _generate_message_id(self, message: Dict[str, Any], email_data: Dict[str, Any]) -> str:
         """Generate a unique message ID"""
-        content = f"{message.get('sender', '')}{message.get('timestamp', '')}{message.get('body_text', '')[:100]}"
+        content = f"{message.get('sender', '')}{message.get('timestamp', '')}{message.get('query', '')[:100]}"
         return hashlib.md5(content.encode()).hexdigest()[:12]
 
     def _generate_content_hash(self, content: str) -> str:
@@ -197,11 +201,11 @@ PARSE THIS EMAIL THREAD AND EXTRACT ALL INDIVIDUAL MESSAGES.
         
         # Try to parse and normalize various timestamp formats
         try:
-            # Add more parsing logic here as needed
             if isinstance(timestamp, str) and 'T' in timestamp:
                 return timestamp  # Already ISO format
             else:
-                # Fallback to current time
+                # Try to parse common formats and convert to ISO
+                # Add more sophisticated parsing if needed
                 return datetime.utcnow().isoformat()
         except:
             return datetime.utcnow().isoformat()
@@ -219,8 +223,8 @@ PARSE THIS EMAIL THREAD AND EXTRACT ALL INDIVIDUAL MESSAGES.
             "source": "direct",
             "extracted_from": None,
             "subject": email_data.get('subject', ''),
-            "body_text": email_data.get('body_text', ''),
-            "content_hash": self._generate_content_hash(email_data.get('body_text', '')),
+            "query": "AI_THREAD_PARSE_FAILED",  # Use query with diagnostic message
+            "content_hash": self._generate_content_hash("AI_THREAD_PARSE_FAILED"),
             "thread_position": 1,
             "priority": "Normal"
         }] 

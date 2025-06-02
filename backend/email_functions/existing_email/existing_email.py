@@ -8,7 +8,6 @@ import json
 import asyncio
 from datetime import datetime
 from backend.airtable_service import AirtableService
-from backend.email_functions.auto_reply import send_auto_reply
 from .thread_parser_ai import ThreadParserAI
 
 logger = logging.getLogger(__name__)
@@ -58,8 +57,8 @@ async def process_existing_email(email_data, classification_data=None):
         if update_result:
             logger.info(f"✅ [EXISTING EMAIL] Updated conversation for ticket {ticket_number}")
             
-            # Send auto-reply for the new message
-            await send_reply_confirmation(email_data, ticket_number, existing_record)
+            # No auto-reply needed for existing ticket replies - customer already received confirmation
+            logger.info(f"📝 [EXISTING EMAIL] Reply processed successfully, no auto-reply sent")
             
             return {
                 "success": True,
@@ -152,30 +151,6 @@ def merge_conversations(existing_messages, new_messages):
     logger.info(f"📜 [CONVERSATION] Merged conversation: {len(all_messages)} total messages ({len(unique_new_messages)} new)")
     return all_messages
 
-
-async def send_reply_confirmation(email_data, ticket_number, existing_record):
-    """Send auto-reply confirmation for reply to existing ticket"""
-    try:
-        # Extract sender information
-        sender = email_data.get('sender')
-        sender_name = email_data.get('sender_name', '')
-        subject = email_data.get('subject', '')
-        
-        # Send confirmation auto-reply
-        await send_auto_reply(
-            recipient=sender,
-            ticket_number=ticket_number,
-            original_subject=subject,
-            sender_name=sender_name,
-            priority="Normal",
-            ai_summary=f"Reply received for existing ticket {ticket_number}",
-            original_email_body=email_data.get('body_text', '')  # Include for human review
-        )
-        
-        logger.info(f"✅ [AUTO REPLY] Sent reply confirmation for {ticket_number} to {sender}")
-        
-    except Exception as e:
-        logger.error(f"❌ [AUTO REPLY] Failed to send reply confirmation: {e}")
 
 
 # Keep backward compatibility

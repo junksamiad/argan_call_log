@@ -64,7 +64,7 @@ class EmailMetadata(BaseModel):
 
 class EmailContent(BaseModel):
     """Email content and structure"""
-    body_text: str
+    query: str  # AI-extracted clean content
     body_html: Optional[str] = None
     original_content: str  # Raw content before processing
     quoted_content: Optional[str] = None  # Any quoted/replied content
@@ -100,8 +100,8 @@ class FlattenedEmailData(BaseModel):
     
     # Content fields
     subject: str
-    body_text: str
     body_html: Optional[str] = None
+    query: str  # AI-extracted clean customer query from HTML/text
     message_id: str
     email_date: Optional[str] = None
     

@@ -44,6 +44,7 @@ class EmailService:
         content_html: Optional[str] = None,
         ticket_number: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        cc_addresses: Optional[List[str]] = None,
         max_retries: int = 3
     ) -> Dict[str, Any]:
         """
@@ -74,12 +75,19 @@ class EmailService:
                     content_html = content_html.strip()
                 
                 # Build email payload
+                personalization = {
+                    "to": [{"email": to_email}]
+                }
+                
+                # Add CC addresses if provided
+                if cc_addresses:
+                    cc_list = [{"email": cc_email.strip()} for cc_email in cc_addresses if cc_email.strip()]
+                    if cc_list:
+                        personalization["cc"] = cc_list
+                        logger.info(f"📧 [EMAIL SERVICE] Adding CC recipients: {[cc['email'] for cc in cc_list]}")
+                
                 payload = {
-                    "personalizations": [
-                        {
-                            "to": [{"email": to_email}]
-                        }
-                    ],
+                    "personalizations": [personalization],
                     "from": {
                         "email": self.from_email,
                         "name": "Argan HR Consultancy"

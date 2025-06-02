@@ -102,6 +102,7 @@ If you find a ticket number, specify where it was found using these EXACT values
 ## Data Extraction Requirements
 - Extract ALL available contact information
 - Parse email metadata thoroughly
+- **EXTRACT CLEAN CUSTOMER QUERY**: Always extract the customer's actual question/request as plain text from the HTML body content. This should be the clean, readable version of what the customer is asking, stripped of HTML tags, signatures, and formatting. This field is CRITICAL for auto-replies and human review.
 - Identify urgency indicators (urgent, ASAP, emergency, deadline words)
 - Detect deadline mentions and time-sensitive language
 - Extract attachment information
@@ -165,9 +166,6 @@ MESSAGE ID: {email_data.get('message_id', 'Unknown')}
 
 EMAIL DATE: {email_data.get('email_date', 'Unknown')}
 
-BODY TEXT:
-{email_data.get('body_text', 'No text content')}
-
 BODY HTML:
 {email_data.get('body_html', 'No HTML content')}
 
@@ -209,19 +207,34 @@ ATTACHMENTS: {email_data.get('attachments', 'None')}
         # Use sync version for now since async was hanging
         return self._call_openai_classifier_sync(email_content)
     
+    def _extract_fallback_query(self, email_data: Dict[str, Any]) -> str:
+        """
+        Simple fallback when AI classification fails - just check if HTML body exists
+        """
+        body_html = email_data.get('body_html', '').strip()
+        if body_html:
+            logger.warning(f"🔄 [FALLBACK] AI failed but HTML body exists (length: {len(body_html)})")
+            return "AI_EXTRACTION_FAILED_HTML_AVAILABLE"
+        else:
+            logger.warning(f"🔄 [FALLBACK] No HTML body content available")
+            return "NO_HTML_BODY"
+    
     def _create_fallback_response(self, email_data: Dict[str, Any], error_msg: str) -> EmailClassificationResponse:
         """Create a fallback response when AI classification fails"""
         logger.warning(f"🤖 [AI CLASSIFIER] Creating fallback response due to error: {error_msg}")
         
-        # Simple fallback logic - check for basic ticket patterns
+        # Simple fallback logic - check for basic ticket patterns in subject and HTML
         subject = email_data.get('subject', '').upper()
-        body = email_data.get('body_text', '').upper()
+        body_html = email_data.get('body_html', '').upper()
         
         # Basic regex fallback for ticket detection
         import re
         ticket_pattern = r'ARG-\d{8}-\d{4}'
         
-        has_ticket = bool(re.search(ticket_pattern, subject) or re.search(ticket_pattern, body))
+        has_ticket = bool(re.search(ticket_pattern, subject) or re.search(ticket_pattern, body_html))
+        
+        # Extract query using simple fallback logic (no AI)
+        fallback_query = self._extract_fallback_query(email_data)
         
         from .email_classification_schema import EmailClassification, FlattenedEmailData
         
@@ -233,8 +246,8 @@ ATTACHMENTS: {email_data.get('attachments', 'None')}
                 sender_domain=email_data.get('sender', '').split('@')[-1] if '@' in email_data.get('sender', '') else None,
                 recipients_list=json.dumps(email_data.get('recipients', [])),
                 subject=email_data.get('subject', 'No Subject'),
-                body_text=email_data.get('body_text', ''),
                 body_html=email_data.get('body_html'),
+                query=fallback_query,  # Now properly extracted
                 message_id=email_data.get('message_id', ''),
                 email_date=str(email_data.get('email_date', datetime.utcnow())),
                 ticket_number=None,  # Fallback doesn't extract ticket
