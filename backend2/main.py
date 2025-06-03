@@ -120,29 +120,113 @@ async def process_new_email_path(context_object: Dict[str, Any], classifier_resp
         logger.info("💾 [NEW EMAIL PATH] Storing email in Airtable...")
         airtable_success = store_new_email(email_data)
         
-        if airtable_success:
-            logger.info("✅ [NEW EMAIL PATH] Email stored in Airtable successfully")
-            context_object['processing_status'] = 'stored_in_airtable'
-        else:
+        if not airtable_success:
             logger.error("❌ [NEW EMAIL PATH] Failed to store email in Airtable")
             context_object['processing_status'] = 'airtable_error'
+            # Return error - don't proceed with auto-reply if storage failed
+            return {
+                "success": False,
+                "path_taken": "new_email",
+                "error": "Failed to store email in Airtable",
+                "message": "New email processing failed at storage step",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        logger.info("✅ [NEW EMAIL PATH] Email stored in Airtable successfully")
+        context_object['processing_status'] = 'stored_in_airtable'
         # ============================================================================
         
-        # TODO: Implement remaining new email processing logic
-        # This will include:
-        # - Send auto-reply with ticket number
+        # ============================================================================
+        # STEP 3: SEND AUTO-REPLY EMAIL
+        # ============================================================================
+        logger.info("📤 [NEW EMAIL PATH] Sending auto-reply email...")
+        from .email_service import email_service
+        from .auto_reply_templates import template_generator, extract_sender_info_from_db_record
+        
+        try:
+            # Extract sender information from stored data with name components
+            sender_info = extract_sender_info_from_db_record(
+                email_data['initial_conversation_query'],
+                email_data['sender_first_name'],
+                email_data['sender_last_name']
+            )
+            
+            # Generate auto-reply content using first name for personalized greeting
+            auto_reply_content = template_generator.generate_auto_reply_content(
+                sender_first_name=sender_info['sender_first_name'],
+                original_subject=email_data['subject'], 
+                original_query=sender_info['original_content'],
+                ticket_number=ticket_number,
+                priority="Normal"  # Default priority for new emails
+            )
+            
+            # Send auto-reply with CC to argan-bot (testing)
+            cc_addresses = ["argan-bot@arganhrconsultancy.co.uk"]  # Will change to advice@ after testing
+            
+            auto_reply_result = await email_service.send_auto_reply_email(
+                to_email=sender_info['sender_email'],
+                subject=auto_reply_content['subject'],
+                text_content=auto_reply_content['text_body'],
+                html_content=auto_reply_content['html_body'],
+                ticket_number=ticket_number,
+                cc_addresses=cc_addresses
+            )
+            
+            if auto_reply_result['success']:
+                logger.info("✅ [NEW EMAIL PATH] Auto-reply sent successfully")
+                context_object['processing_status'] = 'auto_reply_sent'
+                context_object['auto_reply_status'] = 'sent'
+                
+                # Update Airtable record to mark initial_auto_reply_sent = True
+                from .database import update_auto_reply_status
+                update_success = update_auto_reply_status(ticket_number, True)
+                if update_success:
+                    logger.info("✅ [NEW EMAIL PATH] Airtable auto-reply status updated")
+                else:
+                    logger.warning("⚠️ [NEW EMAIL PATH] Failed to update Airtable auto-reply status")
+                
+            else:
+                logger.error(f"❌ [NEW EMAIL PATH] Auto-reply failed: {auto_reply_result.get('message', 'Unknown error')}")
+                context_object['processing_status'] = 'auto_reply_failed'
+                context_object['auto_reply_status'] = 'failed'
+                context_object['auto_reply_error'] = auto_reply_result.get('message', 'Unknown error')
+                
+                # Auto-reply failure shouldn't fail the entire process, but we log it
+                logger.warning("⚠️ [NEW EMAIL PATH] Continuing despite auto-reply failure")
+                
+        except Exception as e:
+            logger.error(f"❌ [NEW EMAIL PATH] Exception in auto-reply process: {e}")
+            context_object['processing_status'] = 'auto_reply_exception'
+            context_object['auto_reply_status'] = 'exception'
+            context_object['auto_reply_error'] = str(e)
+            # Continue processing despite auto-reply failure
+        # ============================================================================
+        
+        # Determine overall success based on auto-reply status
+        overall_success = True
+        overall_message = f"New email processed - ticket {ticket_number} generated"
+        
+        if context_object.get('auto_reply_status') == 'sent':
+            overall_message += " and auto-reply sent"
+        elif context_object.get('auto_reply_status') in ['failed', 'exception']:
+            overall_message += " but auto-reply failed"
+            # Note: We still consider this a success since the ticket was created
         
         result = {
-            "success": True,
+            "success": overall_success,
             "path_taken": "new_email",
             "ticket_number": ticket_number,
-            "message": f"New email processed - ticket {ticket_number} generated",
+            "message": overall_message,
+            "auto_reply_status": context_object.get('auto_reply_status', 'not_attempted'),
+            "auto_reply_error": context_object.get('auto_reply_error'),
             "context": context_object,
             "classifier_response": classifier_response,
             "timestamp": datetime.utcnow().isoformat()
         }
         
         logger.info("✅ [NEW EMAIL PATH] Processing complete")
+        logger.info(f"📊 [NEW EMAIL PATH] Final status: {context_object.get('processing_status', 'unknown')}")
+        logger.info(f"📧 [NEW EMAIL PATH] Auto-reply status: {context_object.get('auto_reply_status', 'not_attempted')}")
         return result
         
     except Exception as e:
@@ -168,24 +252,41 @@ async def process_existing_email_path(context_object: Dict[str, Any], classifier
         Processing result dictionary
     """
     try:
-        logger.info("💬 [EXISTING EMAIL PATH] Starting existing email processing")
-        logger.info(f"💬 [EXISTING EMAIL PATH] Subject: {context_object.get('subject')}")
-        logger.info(f"💬 [EXISTING EMAIL PATH] Ticket: {classifier_response.ticket_number_found}")
+        # Convert context_object to EmailContext for the handler
+        from .models.email_context import EmailContext
         
-        # TODO: Implement existing email processing logic
-        # This will include:
-        # - Look up existing ticket in database
-        # - Update conversation history
-        # - Send notification to HR team
-        # - Parse thread for new content
+        # Create EmailContext object from dict
+        email_context = EmailContext(
+            subject=context_object.get('subject', ''),
+            text=context_object.get('text', ''),
+            from_field=context_object.get('from', ''),
+            to=context_object.get('to', ''),
+            sender_ip=context_object.get('sender_ip', ''),
+            spf=context_object.get('spf', ''),
+            dkim=context_object.get('dkim', ''),
+            attachments=context_object.get('attachments', '0'),
+            charsets=context_object.get('charsets', '{}'),
+            envelope=context_object.get('envelope', '{}'),
+            headers=context_object.get('headers', ''),
+            received_timestamp=context_object.get('received_timestamp', ''),
+            processing_status=context_object.get('processing_status', 'received'),
+            raw_payload_keys=context_object.get('raw_payload_keys', []),
+            _raw_payload=context_object.get('_raw_payload', {})
+        )
         
+        # Import and use the new existing email handler
+        from .email_functions.existing_email.existing_email_handler import process_existing_email_path as handler_process
+        
+        # Process with the sophisticated auto-reply detection
+        handler_result = handler_process(email_context, classifier_response.ticket_number_found)
+        
+        # Convert handler result to our expected format
         result = {
             "success": True,
             "path_taken": "existing_email",
             "ticket_number": classifier_response.ticket_number_found,
-            "message": "Existing email path processing started",
-            "context": context_object,
-            "classifier_response": classifier_response,
+            "processing_result": handler_result,
+            "message": f"Existing email path - {handler_result['status']}",
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -221,27 +322,27 @@ async def process_email(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
         context_object = create_context_object(raw_payload)
         
         # ============================================================================
-        # STEP 2: EMAIL DEDUPLICATION CHECK
+        # STEP 2: EMAIL DEDUPLICATION CHECK WITH RACE CONDITION PROTECTION
         # ============================================================================
         # Extract Message-ID from headers for duplicate detection
-        from .utils import extract_message_id_from_headers, is_duplicate_email, mark_email_as_processed
+        from .utils import extract_message_id_from_headers, mark_email_as_processing, mark_email_as_processed
         
         logger.info("🔍 [MAIN ORCHESTRATOR] Checking for duplicate emails...")
         message_id = extract_message_id_from_headers(context_object.get('headers', ''))
         
-        # Check if this email has already been processed
-        if is_duplicate_email(message_id):
-            logger.warning("🚫 [MAIN ORCHESTRATOR] DUPLICATE EMAIL DETECTED - SKIPPING PROCESSING")
+        # Mark as processing immediately to prevent race conditions
+        if not mark_email_as_processing(message_id):
+            logger.warning("🚫 [MAIN ORCHESTRATOR] DUPLICATE/CONCURRENT EMAIL DETECTED - SKIPPING PROCESSING")
             logger.info("=" * 60)
             return {
                 "success": True,
                 "status": "duplicate_skipped",
-                "message": "Email already processed - duplicate detected",
+                "message": "Email already processed or currently processing - duplicate detected",
                 "message_id": message_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
         
-        logger.info("✅ [MAIN ORCHESTRATOR] Email is new - proceeding with processing")
+        logger.info("✅ [MAIN ORCHESTRATOR] Email is new and marked for processing - proceeding")
         # ============================================================================
         
         # Step 3: Use AI classifier to determine processing path
@@ -260,15 +361,16 @@ async def process_email(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning(f"❓ [MAIN ORCHESTRATOR] Unknown path: {classifier_response.path}, defaulting to new_email")
             result = await process_new_email_path(context_object, classifier_response)
         
-        # ============================================================================
-        # STEP 5: MARK EMAIL AS PROCESSED (PREVENT FUTURE DUPLICATES)
-        # ============================================================================
-        logger.info("📝 [MAIN ORCHESTRATOR] Marking email as processed...")
-        mark_email_as_processed(message_id)
-        # ============================================================================
+        # Note: Email is already marked as processed during deduplication check
+        # No need for additional marking here since we use immediate processing lock
         
         logger.info("=" * 60)
         logger.info("✅ [MAIN ORCHESTRATOR] Email processing complete")
+        logger.info("✅ EMAIL PROCESSING SUCCESSFUL!")
+        logger.info(f"🔀 Path taken: {result.get('path_taken', 'unknown')}")
+        if result.get('auto_reply_status'):
+            logger.info(f"📧 Auto-reply status: {result.get('auto_reply_status')}")
+        logger.info("=" * 80)
         
         return result
         

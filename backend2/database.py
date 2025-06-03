@@ -30,6 +30,8 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 class SenderNameExtractionResponse(BaseModel):
     """Pydantic model for structured sender name extraction output"""
     sender_name: Optional[str] = None
+    sender_first_name: Optional[str] = None
+    sender_last_name: Optional[str] = None
     confidence: float = 0.0
     notes: Optional[str] = None
 
@@ -38,7 +40,7 @@ class SenderNameExtractor:
     """Simple AI agent for extracting sender names from email content"""
     
     def __init__(self):
-        self.model = "gpt-4.1-mini"  # Using the full model for better accuracy
+        self.model = "gpt-4.1"  # Using the full model for better accuracy
     
     def extract_sender_name(self, email_content: str) -> SenderNameExtractionResponse:
         """
@@ -58,34 +60,52 @@ class SenderNameExtractor:
 You are a specialist at extracting sender names from email content. Your job is to analyze email text and identify if the sender has included their name in the message.
 
 ## What to Look For:
-- Names in email signatures (e.g., "Best regards, John Smith")
-- Names at the end of messages (e.g., "Thanks, Sarah")
+- Names in email signatures, especially after "Best regards", "Sincerely", "Thanks", etc.
+- Names that appear on separate lines after closing phrases
+- Names followed by job titles or company information
 - Names in introductions (e.g., "Hi, this is Mike calling about...")
-- Names in closings (e.g., "Sincerely, Dr. Williams")
+- Names that appear to be the person signing off the email
 
 ## What NOT to Extract:
-- Company names
-- Generic titles (Manager, Director, etc.)
+- Company names alone (e.g., "TechFlow Solutions Ltd")
+- Generic titles without names (Manager, Director, etc.)
 - Email addresses
 - Phone numbers
-- Names that appear to be other people being mentioned
+- Names that appear to be other people being mentioned in the content
+
+## Name Component Extraction:
+- **sender_name**: Full name as it appears (e.g., "Rebecca Thompson")
+- **sender_first_name**: First name only (e.g., "Rebecca") 
+- **sender_last_name**: Last name only (e.g., "Thompson")
+- If only first name found, leave last name as null
+- If only last name found, leave first name as null
 
 ## Guidelines:
-- Only extract if you're confident it's the sender's actual name
-- Return just the person's name (first name + last name if available)
-- If uncertain or no name found, return null
-- Provide confidence score 0.0-1.0
+- Look carefully at the END of the email for signatures
+- Names often appear after "Best regards,", "Sincerely,", "Thanks," etc.
+- If you see a person's name followed by title/company info, extract the person's name
+- Split names into first and last components when possible
+- Set confidence to 1.0 if you find a clear signature, 0.8 for probable names, 0.0 if uncertain
+- If no clear name found, return all fields as null
 
 ## Examples:
-- "Thanks for your help.\n\nBest regards,\nJohn Smith" → "John Smith"
-- "Hi there, this is Sarah from ABC Corp..." → "Sarah"  
-- "Please contact our manager for assistance." → null (no sender name)
+- "Thanks for your help.\n\nBest regards,\nJohn Smith" → sender_name: "John Smith", first: "John", last: "Smith"
+- "Best regards,\n\nRebecca Thompson\nOperations Director" → sender_name: "Rebecca Thompson", first: "Rebecca", last: "Thompson"
+- "Hi there, this is Sarah from ABC Corp..." → sender_name: "Sarah", first: "Sarah", last: null
+- "Please contact our manager for assistance." → all null (no sender name)
 """
 
-            user_prompt = f"""Analyze this email content and extract the sender's name:
+            user_prompt = f"""Analyze this email content and extract the sender's name.
+
+IMPORTANT: Pay special attention to the END of the email where signatures typically appear.
 
 EMAIL CONTENT:
-{email_content[:1000]}  
+{email_content}
+
+Focus on finding:
+- Names after "Best regards,", "Sincerely,", "Thanks," etc.
+- Names on separate lines after closing phrases
+- Names followed by titles or company information
 
 Extract the sender's name if clearly identifiable, otherwise return null."""
 
@@ -178,10 +198,20 @@ def extract_email_data_from_context(context_object: Dict[str, Any]) -> Dict[str,
             # Auto-reply tracking
             'initial_auto_reply_sent': False,  # Will be updated after auto-reply is sent
             
-            # Conversation tracking
-            'initial_conversation_query': build_initial_conversation_query(context_object),
+            # Sender name components (extracted from AI parsing)
+            'sender_first_name': '',  # Will be populated during conversation building
+            'sender_last_name': '',   # Will be populated during conversation building
+            
+            # Conversation tracking - get name components from conversation building
+            'initial_conversation_query': '',  # Will be set below
             'conversation_history': '[]'  # Empty array for new emails
         }
+        
+        # Build conversation query and get name components
+        conversation_json, first_name, last_name = build_initial_conversation_query(context_object)
+        extracted_data['initial_conversation_query'] = conversation_json
+        extracted_data['sender_first_name'] = first_name
+        extracted_data['sender_last_name'] = last_name
         
         logger.info("📦 [AIRTABLE] Email data extracted successfully")
         logger.info(f"📦 [AIRTABLE] Ticket: {extracted_data['ticket_number']}")
@@ -320,7 +350,7 @@ def extract_conversation_headers(context_object: Dict[str, Any]) -> str:
         return context_object.get('headers', '')
 
 
-def build_initial_conversation_query(context_object: Dict[str, Any]) -> str:
+def build_initial_conversation_query(context_object: Dict[str, Any]) -> tuple[str, str, str]:
     """
     Build structured JSON for the initial customer query
     
@@ -334,7 +364,7 @@ def build_initial_conversation_query(context_object: Dict[str, Any]) -> str:
         context_object: Context object containing email payload
         
     Returns:
-        JSON string representing the initial conversation query
+        Tuple of (json_string, sender_first_name, sender_last_name)
     """
     try:
         logger.info("📝 [CONVERSATION] Building initial conversation query...")
@@ -355,10 +385,14 @@ def build_initial_conversation_query(context_object: Dict[str, Any]) -> str:
         # Determine final sender name with fallback logic
         if ai_result.sender_name and ai_result.sender_name.strip():
             sender_name = ai_result.sender_name.strip()
-            logger.info(f"✅ [CONVERSATION] Using AI-extracted sender name: '{sender_name}'")
+            sender_first_name = ai_result.sender_first_name.strip() if ai_result.sender_first_name else ""
+            sender_last_name = ai_result.sender_last_name.strip() if ai_result.sender_last_name else ""
+            logger.info(f"✅ [CONVERSATION] Using AI-extracted sender name: '{sender_name}' (first: '{sender_first_name}', last: '{sender_last_name}')")
         else:
             # Fallback: use email username part
             sender_name = original_sender.split('@')[0] if '@' in original_sender else original_sender
+            sender_first_name = sender_name  # Use email username as first name fallback
+            sender_last_name = ""
             logger.info(f"🔄 [CONVERSATION] Using fallback sender name from email: '{sender_name}'")
         
         # Build the structured conversation entry (now with 4 fields)
@@ -379,18 +413,20 @@ def build_initial_conversation_query(context_object: Dict[str, Any]) -> str:
         logger.info(f"📝 [CONVERSATION] Date: {email_date}")
         logger.info(f"📝 [CONVERSATION] Content length: {len(email_content)} chars")
         
-        return json_string
+        return json_string, sender_first_name, sender_last_name
         
     except Exception as e:
         logger.error(f"❌ [CONVERSATION] Error building initial conversation query: {e}")
         # Return empty structure on error with 4 fields
         fallback_email = "unknown@unknown.com"
-        return json.dumps({
+        fallback_name = fallback_email.split('@')[0]
+        fallback_json = json.dumps({
             "sender_email": fallback_email,
             "sender_email_date": datetime.utcnow().isoformat(),
             "sender_email_content": "",
-            "sender_name": fallback_email.split('@')[0]
+            "sender_name": fallback_name
         }, indent=2)
+        return fallback_json, fallback_name, ""
 
 
 def extract_email_date_from_headers(context_object: Dict[str, Any]) -> str:
@@ -665,6 +701,8 @@ def store_new_email(email_data: Dict[str, Any]) -> bool:
             "attachment_count": email_data['attachment_count'],
             "attachment_info": email_data['attachment_info'],
             "initial_auto_reply_sent": email_data['initial_auto_reply_sent'],
+            "sender_first_name": email_data['sender_first_name'],
+            "sender_last_name": email_data['sender_last_name'],
             "initial_conversation_query": email_data['initial_conversation_query'],
             "conversation_history": email_data['conversation_history']
         }
@@ -679,6 +717,48 @@ def store_new_email(email_data: Dict[str, Any]) -> bool:
         
     except Exception as e:
         logger.error(f"❌ [AIRTABLE] Error storing email: {e}")
+        return False
+
+
+def update_auto_reply_status(ticket_number: str, auto_reply_sent: bool) -> bool:
+    """
+    Update the auto-reply status for a ticket in Airtable
+    
+    Args:
+        ticket_number: Ticket number to update
+        auto_reply_sent: Whether auto-reply was sent successfully
+        
+    Returns:
+        True if update successful, False otherwise
+    """
+    try:
+        logger.info(f"🔄 [AIRTABLE] Updating auto-reply status for ticket {ticket_number}")
+        
+        # Find the record by ticket number
+        records = table.all(formula=match({"ticket_number": ticket_number}))
+        
+        if not records:
+            logger.error(f"❌ [AIRTABLE] No record found for ticket {ticket_number}")
+            return False
+        
+        if len(records) > 1:
+            logger.warning(f"⚠️ [AIRTABLE] Multiple records found for ticket {ticket_number}, updating first one")
+        
+        record = records[0]
+        record_id = record['id']
+        
+        # Update the auto-reply status
+        update_data = {
+            "initial_auto_reply_sent": auto_reply_sent
+        }
+        
+        table.update(record_id, update_data)
+        
+        logger.info(f"✅ [AIRTABLE] Updated auto-reply status for ticket {ticket_number} to {auto_reply_sent}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ [AIRTABLE] Error updating auto-reply status for ticket {ticket_number}: {e}")
         return False
 
 

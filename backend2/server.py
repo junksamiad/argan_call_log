@@ -53,24 +53,25 @@ async def handle_inbound_email(request: Request):
     Route to main orchestrator for processing
     """
     try:
-        # Get the raw body
-        raw_body = await request.body()
-        
-        # Parse the payload (handle both JSON and form data)
-        raw_payload = {}
+        # Get the raw body with UTF-8 error handling at the top level
         try:
-            # Try JSON first
-            import json
-            raw_payload = json.loads(raw_body)
-        except json.JSONDecodeError:
-            # Try form data
-            try:
-                form_data = await request.form()
-                raw_payload = dict(form_data)
-            except:
-                # Fallback: parse multipart manually
-                from .utils import parse_multipart_form_data
-                raw_payload = parse_multipart_form_data(raw_body)
+            raw_body = await request.body()
+        except UnicodeDecodeError as e:
+            logger.warning(f"⚠️ [WEBHOOK] UTF-8 error getting request body: {e}")
+            logger.info(f"🔧 [WEBHOOK] Attempting to handle problematic encoding...")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "encoding_error", 
+                    "message": "Request contains invalid UTF-8 characters",
+                    "error": str(e)
+                }
+            )
+        
+        # Always use our custom parser that handles UTF-8 errors
+        logger.info(f"🔧 [WEBHOOK] Using custom multipart parser with UTF-8 error handling...")
+        from .utils import parse_multipart_form_data
+        raw_payload = parse_multipart_form_data(raw_body)
         
         # Log incoming email
         logger.info("=" * 80)
@@ -81,9 +82,21 @@ async def handle_inbound_email(request: Request):
         logger.info(f"📦 Content Type: {request.headers.get('content-type', 'unknown')}")
         logger.info(f"📋 Parsed Fields: {list(raw_payload.keys())}")
         
-        # Route to main orchestrator
-        from .main import process_email
-        result = await process_email(raw_payload)
+        # Route to main orchestrator with UTF-8 error handling
+        try:
+            from .main import process_email
+            result = await process_email(raw_payload)
+        except UnicodeDecodeError as e:
+            logger.error(f"❌ [WEBHOOK] UTF-8 decode error in main processing: {e}")
+            logger.info(f"🔧 [WEBHOOK] Returning error response for UTF-8 issue")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "processing_encoding_error",
+                    "message": "Email processing failed due to encoding issues", 
+                    "error": str(e)
+                }
+            )
         
         if result.get('success'):
             logger.info("✅ EMAIL PROCESSING SUCCESSFUL!")
@@ -113,6 +126,20 @@ async def handle_inbound_email(request: Request):
                 }
             )
             
+    except UnicodeDecodeError as e:
+        logger.error(f"❌ UTF-8 decode error in webhook handler: {e}")
+        logger.info(f"🔧 [WEBHOOK] Position {e.start}-{e.end} contains problematic bytes")
+        logger.info("=" * 80)
+        
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "utf8_error",
+                "message": "Webhook contains invalid UTF-8 characters - auto-reply forwarding loop detected",
+                "error": str(e),
+                "position": f"{e.start}-{e.end}"
+            }
+        )
     except Exception as e:
         logger.error(f"❌ Critical error in webhook handler: {e}")
         logger.info("=" * 80)
