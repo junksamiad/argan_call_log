@@ -32,10 +32,11 @@ class TicketClassificationResponse(BaseModel):
 
 
 class ConversationEntry(BaseModel):
-    """Single conversation entry with sender, date, and content"""
+    """Single conversation entry with sender, date, content, and name"""
     sender_email: str
     sender_email_date: str
     sender_email_content: str
+    sender_name: str
 
 
 class ConversationParsingResponse(BaseModel):
@@ -198,6 +199,7 @@ You are a specialist in parsing email conversation threads. Your job is to extra
 2. Extract sender email, date, and content for each entry
 3. Handle various email client formats and date formats
 4. Clean up content by removing quote markers while preserving structure
+5. Extract FIRST NAME ONLY for sender_name, with email fallback
 
 ## Input Patterns to Look For
 - "> On [date], [sender] wrote:"
@@ -209,22 +211,41 @@ You are a specialist in parsing email conversation threads. Your job is to extra
 - "03/06/2025 05:55 BST"
 - "Mon, 5 Jun 2025 14:30:15 +0100"
 
-## Email Address Examples
-- "Argan HR <argan-bot@arganhrconsultancy.co.uk>" → "argan-bot@arganhrconsultancy.co.uk"
-- "cvrcontractsltd <cvrcontractsltd@gmail.com>" → "cvrcontractsltd@gmail.com"
-- "john.doe@company.com" → "john.doe@company.com"
+## Email Address and Name Processing
+Extract email and first name from these patterns:
+
+**Name Extraction Examples:**
+- "Rebecca Thompson <rebecca@company.com>" → email: "rebecca@company.com", sender_name: "Rebecca"
+- "John Smith <john.doe@company.com>" → email: "john.doe@company.com", sender_name: "John"
+- "Argan HR <argan-bot@arganhrconsultancy.co.uk>" → email: "argan-bot@arganhrconsultancy.co.uk", sender_name: "Argan"
+- "cvrcontractsltd <cvrcontractsltd@gmail.com>" → email: "cvrcontractsltd@gmail.com", sender_name: "cvrcontractsltd@gmail.com" (no clear first name, use email)
+- "john.doe@company.com" → email: "john.doe@company.com", sender_name: "john.doe@company.com" (no display name, use email)
+
+**sender_name Logic:**
+- If display name contains clear first name (like "Rebecca Thompson"), extract FIRST NAME ONLY ("Rebecca")
+- If display name is unclear/corporate (like "Argan HR", "cvrcontractsltd"), use the full display name
+- If display name looks like a single word that could be a first name, use it
+- If no display name or unclear, use the full email address as fallback
 
 ## Content Processing Rules
 - Remove leading ">" quote markers from content lines
 - Preserve original message text and line breaks
 - Stop content extraction at the next conversation marker
-- Maintain chronological order as they appear
+- **IMPORTANT**: Order entries by DATE chronologically (oldest first, newest/latest last)
+
+## Chronological Ordering
+- Parse all conversation entries first, then sort by actual date/time
+- The OLDEST message should be FIRST in the array (index 0)
+- The NEWEST/LATEST message should be LAST in the array (final index)
+- This creates a proper conversation timeline from earliest to most recent
 
 ## Important Notes
 - Extract exact email addresses (remove display names in angle brackets)
+- For sender_name: prioritize extracting first names, fallback to email when unclear
 - Preserve original date strings as found
 - Be flexible with email client formatting variations
-- If no conversation entries found, return empty conversation_entries array"""
+- If no conversation entries found, return empty conversation_entries array
+- Always include sender_name field following the first name extraction logic"""
 
     async def process(self, input_data: Dict[str, Any]) -> str:
         """
@@ -246,39 +267,25 @@ You are a specialist in parsing email conversation threads. Your job is to extra
 
 Return the structured JSON array of conversation entries following the format specified."""
 
-            # Use OpenAI to parse the conversation
-            response = self.client.chat.completions.create(
+            # Use OpenAI Responses API for structured parsing
+            response = self.client.responses.parse(
                 model=self.model,
-                messages=[
+                input=[
                     {"role": "system", "content": self._build_system_prompt()},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,  # Low temperature for consistent parsing
-                max_tokens=2000
+                text_format=ConversationParsingResponse
             )
             
-            # Extract the response content
-            parsed_content = response.choices[0].message.content.strip()
+            # Extract the structured response
+            parsed_response = response.output_parsed
             
-            # Clean up response if it has markdown code blocks
-            if parsed_content.startswith('```json'):
-                parsed_content = parsed_content.replace('```json', '').replace('```', '').strip()
-            elif parsed_content.startswith('```'):
-                parsed_content = parsed_content.replace('```', '').strip()
-            
-            # Validate it's proper JSON
+            # Convert to the expected JSON format (array of conversation entries)
             import json
-            try:
-                parsed_data = json.loads(parsed_content)
-                if isinstance(parsed_data, list):
-                    logger.info(f"✅ [CONVERSATION AI] Successfully parsed {len(parsed_data)} conversation entries")
-                    return parsed_content
-                else:
-                    logger.warning("⚠️ [CONVERSATION AI] Response is not a JSON array, returning empty array")
-                    return "[]"
-            except json.JSONDecodeError as e:
-                logger.warning(f"⚠️ [CONVERSATION AI] Response is not valid JSON: {e}, returning empty array")
-                return "[]"
+            conversation_array = [entry.model_dump() for entry in parsed_response.conversation_entries]
+            
+            logger.info(f"✅ [CONVERSATION AI] Successfully parsed {len(conversation_array)} conversation entries")
+            return json.dumps(conversation_array, indent=2, ensure_ascii=False)
             
         except Exception as e:
             logger.error(f"❌ [CONVERSATION AI] Error parsing conversation: {e}")

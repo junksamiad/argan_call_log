@@ -2,6 +2,8 @@ import logging
 from ..models.email_context import EmailContext
 from ..models.email_path import EmailPath
 import re
+import json
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +29,47 @@ def process_existing_email_path(context: EmailContext, ticket_number: str) -> di
     logger.info("📨 [EXISTING EMAIL PATH] Detected genuine response (customer or HR advisor)")
     logger.info(f"🔍 [EXISTING EMAIL PATH] FROM field: {context.from_field}")
     
-    # TODO: Implement genuine response handling
-    return {
-        "status": "genuine_response_detected", 
-        "ticket_number": ticket_number,
-        "message": "Genuine response detected - processing not yet implemented"
-    }
+    # Step 1: Retrieve existing record from database
+    logger.info(f"🔍 [EXISTING EMAIL PATH] Retrieving existing record for ticket: {ticket_number}")
+    existing_record = get_existing_record(ticket_number)
+    
+    if not existing_record:
+        logger.error(f"❌ [EXISTING EMAIL PATH] No record found for ticket: {ticket_number}")
+        return {
+            "status": "error_record_not_found",
+            "ticket_number": ticket_number,
+            "message": f"No existing record found for ticket {ticket_number}"
+        }
+    
+    logger.info(f"✅ [EXISTING EMAIL PATH] Found existing record: {existing_record.get('record_id', 'N/A')}")
+    
+    # Step 2: Parse conversation using ConversationParsingAgent
+    logger.info("🧵 [EXISTING EMAIL PATH] Parsing conversation thread...")
+    new_conversation_history = parse_conversation_thread(context.text)
+    
+    # Step 3: Update database record
+    logger.info("💾 [EXISTING EMAIL PATH] Updating database record...")
+    update_result = update_existing_record(
+        ticket_number=ticket_number,
+        new_conversation_history=new_conversation_history,
+        new_raw_headers=context.headers
+    )
+    
+    if update_result['success']:
+        logger.info("✅ [EXISTING EMAIL PATH] Record updated successfully")
+        return {
+            "status": "conversation_updated",
+            "ticket_number": ticket_number,
+            "message": "Conversation history updated successfully",
+            "conversation_entries_count": len(new_conversation_history) if isinstance(new_conversation_history, list) else 0
+        }
+    else:
+        logger.error(f"❌ [EXISTING EMAIL PATH] Failed to update record: {update_result.get('error', 'Unknown error')}")
+        return {
+            "status": "error_update_failed",
+            "ticket_number": ticket_number,
+            "message": f"Failed to update record: {update_result.get('error', 'Unknown error')}"
+        }
 
 def detect_auto_reply_forward(context: EmailContext) -> bool:
     """
@@ -250,4 +287,126 @@ def extract_message_id(context: EmailContext) -> str:
         match = re.search(r'Message-ID:\s*(.+)', headers, re.IGNORECASE)
         if match:
             return match.group(1).strip()
-    return "unknown" 
+    return "unknown"
+
+def get_existing_record(ticket_number: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve existing record from Airtable using ticket number
+    
+    Args:
+        ticket_number: The ticket number to search for
+        
+    Returns:
+        Dictionary containing the record data or None if not found
+    """
+    try:
+        logger.info(f"🔍 [DATABASE] Searching for existing record with ticket: {ticket_number}")
+        
+        # Import database functions
+        from ...database import get_airtable_client
+        
+        # Get Airtable client and search for the record
+        client = get_airtable_client()
+        
+        # Search using the ticket_number field
+        records = client.all(formula=f"{{ticket_number}}='{ticket_number}'")
+        
+        if not records:
+            logger.warning(f"⚠️ [DATABASE] No record found for ticket: {ticket_number}")
+            return None
+        
+        if len(records) > 1:
+            logger.warning(f"⚠️ [DATABASE] Multiple records found for ticket {ticket_number}, using first one")
+        
+        record = records[0]
+        logger.info(f"✅ [DATABASE] Found record: {record['id']}")
+        
+        # Return both the record ID and fields for easy access
+        return {
+            'record_id': record['id'],
+            'fields': record['fields']
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [DATABASE] Error retrieving record for ticket {ticket_number}: {e}")
+        return None
+
+def parse_conversation_thread(email_text: str) -> List[Dict[str, Any]]:
+    """
+    Parse conversation thread using ConversationParsingAgent
+    
+    Args:
+        email_text: The full email text content
+        
+    Returns:
+        List of conversation entries as dictionaries
+    """
+    try:
+        logger.info("🤖 [CONVERSATION] Initializing ConversationParsingAgent...")
+        
+        # Import the conversation parsing agent
+        from ...ai_agents import ConversationParsingAgent
+        
+        # Initialize agent
+        agent = ConversationParsingAgent()
+        
+        # Parse the conversation thread
+        logger.info(f"🧵 [CONVERSATION] Parsing {len(email_text)} characters of email content...")
+        conversation_json = agent.parse_conversation_thread_sync(email_text)
+        
+        # Parse JSON response
+        conversation_entries = json.loads(conversation_json)
+        
+        logger.info(f"✅ [CONVERSATION] Successfully parsed {len(conversation_entries)} conversation entries")
+        return conversation_entries
+        
+    except Exception as e:
+        logger.error(f"❌ [CONVERSATION] Error parsing conversation thread: {e}")
+        return []  # Return empty list on error
+
+def update_existing_record(ticket_number: str, new_conversation_history: List[Dict[str, Any]], new_raw_headers: str) -> Dict[str, Any]:
+    """
+    Update existing Airtable record with new conversation history and raw headers
+    
+    Args:
+        ticket_number: The ticket number to update
+        new_conversation_history: List of conversation entries
+        new_raw_headers: Raw email headers string
+        
+    Returns:
+        Dictionary with success status and any error message
+    """
+    try:
+        logger.info(f"💾 [DATABASE] Updating record for ticket: {ticket_number}")
+        
+        # Get the existing record first
+        existing_record = get_existing_record(ticket_number)
+        if not existing_record:
+            return {'success': False, 'error': 'Record not found'}
+        
+        record_id = existing_record['record_id']
+        
+        # Import database functions
+        from ...database import get_airtable_client
+        
+        # Get Airtable client
+        client = get_airtable_client()
+        
+        # Prepare update data
+        update_data = {
+            'conversation_history': json.dumps(new_conversation_history, ensure_ascii=False),
+            'raw_headers': new_raw_headers
+        }
+        
+        logger.info(f"📝 [DATABASE] Updating record {record_id} with {len(new_conversation_history)} conversation entries")
+        logger.info(f"📝 [DATABASE] Raw headers length: {len(new_raw_headers)} characters")
+        
+        # Update the record
+        client.update(record_id, update_data)
+        
+        logger.info(f"✅ [DATABASE] Successfully updated record {record_id}")
+        return {'success': True}
+        
+    except Exception as e:
+        logger.error(f"❌ [DATABASE] Error updating record for ticket {ticket_number}: {e}")
+        return {'success': False, 'error': str(e)} 
