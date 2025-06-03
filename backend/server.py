@@ -196,6 +196,98 @@ async def get_processing_stats():
         )
 
 
+@app.get("/conversation/{ticket_number}")
+async def get_full_conversation(ticket_number: str):
+    """
+    Get the complete conversation history for a ticket using the computed formula field
+    
+    Args:
+        ticket_number: Ticket number (e.g., ARG-20250603-1234)
+        
+    Returns:
+        Complete conversation data including all messages and metadata
+    """
+    try:
+        from backend.airtable_service import AirtableService
+        airtable = AirtableService()
+        
+        # Export full conversation data
+        conversation_data = airtable.export_conversation_data(ticket_number)
+        
+        if not conversation_data:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Ticket not found",
+                    "ticket_number": ticket_number
+                }
+            )
+        
+        logger.info(f"📄 [API] Exported conversation for {ticket_number}: {conversation_data['message_count']} messages")
+        
+        return {
+            "status": "success",
+            "data": conversation_data,
+            "export_timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error exporting conversation for {ticket_number}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "ticket_number": ticket_number
+            }
+        )
+
+
+@app.get("/conversation/{ticket_number}/messages")
+async def get_conversation_messages_only(ticket_number: str):
+    """
+    Get just the conversation messages array for a ticket (no metadata)
+    
+    Args:
+        ticket_number: Ticket number (e.g., ARG-20250603-1234)
+        
+    Returns:
+        Array of conversation messages in chronological order
+    """
+    try:
+        from backend.airtable_service import AirtableService
+        airtable = AirtableService()
+        
+        # Get just the messages
+        messages = airtable.get_full_conversation_history(ticket_number)
+        
+        if not messages:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Ticket not found or no messages",
+                    "ticket_number": ticket_number
+                }
+            )
+        
+        return {
+            "status": "success",
+            "ticket_number": ticket_number,
+            "messages": messages,
+            "message_count": len(messages),
+            "retrieved_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting messages for {ticket_number}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "ticket_number": ticket_number
+            }
+        )
+
+
 if __name__ == "__main__":
     print("🚀 Starting HR Email Management Server v2.0")
     print("📊 Database: Airtable")

@@ -400,6 +400,76 @@ class AirtableService:
             logger.error(f"❌ [AIRTABLE] Error getting conversation for {ticket_number}: {e}")
             return []
 
+    def get_full_conversation_history(self, ticket_number):
+        """
+        Get the complete conversation history from the computed formula field
+        This includes both initial_conversation_query and conversation_history combined
+        
+        Args:
+            ticket_number: Ticket number to retrieve full conversation for
+            
+        Returns:
+            List of conversation entries in chronological order, or empty list if not found
+        """
+        try:
+            record = self.find_ticket(ticket_number)
+            if record:
+                # Get the computed formula field that combines both conversation fields
+                full_conversation_json = record['fields'].get('final_conversation_history', '[]')
+                full_conversation = json.loads(full_conversation_json)
+                
+                logger.info(f"📜 [AIRTABLE] Retrieved full conversation for {ticket_number}: {len(full_conversation)} messages")
+                return full_conversation
+            
+            logger.warning(f"📜 [AIRTABLE] Ticket {ticket_number} not found")
+            return []
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ [AIRTABLE] JSON decode error for {ticket_number}: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"❌ [AIRTABLE] Error getting full conversation for {ticket_number}: {e}")
+            return []
+
+    def export_conversation_data(self, ticket_number):
+        """
+        Export complete conversation data for a ticket including metadata
+        
+        Args:
+            ticket_number: Ticket number to export
+            
+        Returns:
+            Dict with complete conversation data and metadata
+        """
+        try:
+            record = self.find_ticket(ticket_number)
+            if not record:
+                return None
+            
+            fields = record['fields']
+            full_conversation = self.get_full_conversation_history(ticket_number)
+            
+            return {
+                "ticket_number": ticket_number,
+                "airtable_record_id": record['id'],
+                "full_conversation": full_conversation,
+                "message_count": len(full_conversation),
+                "ticket_created": fields.get('Created At'),
+                "last_updated": fields.get('Last Updated'),
+                "status": fields.get('Status'),
+                "sender_email": fields.get('Sender Email'),
+                "sender_name": fields.get('Sender Name'),
+                "subject": fields.get('Subject'),
+                "ai_classification": fields.get('AI Classification'),
+                "ai_summary": fields.get('AI Summary'),
+                "query_type": fields.get('Query Type'),
+                "priority": fields.get('Priority')
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ [AIRTABLE] Error exporting conversation data for {ticket_number}: {e}")
+            return None
+
     # Backward compatibility
     def find_ticket_by_number(self, ticket_number):
         """Backward compatibility method"""
