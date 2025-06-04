@@ -36,6 +36,11 @@ class SenderNameExtractionResponse(BaseModel):
     notes: Optional[str] = None
 
 
+class CareHomeNameExtractionResponse(BaseModel):
+    """Pydantic model for structured care home name extraction output"""
+    care_home_name: Optional[str] = None
+
+
 class SenderNameExtractor:
     """Simple AI agent for extracting sender names from email content"""
     
@@ -139,6 +144,64 @@ Extract the sender's name if clearly identifiable, otherwise return null."""
 # Initialize name extractor
 name_extractor = SenderNameExtractor()
 
+
+class CareHomeNameExtractor:
+    """AI agent for extracting care home names from email content"""
+    
+    def __init__(self):
+        self.model = "gpt-4.1"  # Using the full model for better accuracy
+    
+    def extract_care_home_name(self, email_content: str) -> CareHomeNameExtractionResponse:
+        """
+        Extract care home name from email content using AI
+        
+        Args:
+            email_content: Email body text to analyze
+            
+        Returns:
+            CareHomeNameExtractionResponse with extracted care home name or None
+        """
+        try:
+            logger.info("🏠 [CARE HOME EXTRACTOR] Analyzing email content for care home name...")
+            
+            # Placeholder system prompt - will be provided by user
+            system_prompt = """You have been passed an email query. Check the whole email message for signs of a care home name that the query relates to. First check the email content to see if you can determine this from the message content. If it's not obvious from the message content, then check the sender's email signature to see if it mentions what care home they work at, and use that  care home name. You must produce a structured output as per your response output json schema."""
+
+            user_prompt = f"""Analyze this email content and extract the care home name if present.
+
+EMAIL CONTENT:
+{email_content}
+
+Extract the care home name if clearly identifiable, otherwise return null."""
+
+            response = openai_client.responses.parse(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                text_format=CareHomeNameExtractionResponse
+            )
+            
+            result = response.output_parsed
+            
+            if result.care_home_name:
+                logger.info(f"✅ [CARE HOME EXTRACTOR] Found care home name: '{result.care_home_name}'")
+            else:
+                logger.info(f"ℹ️ [CARE HOME EXTRACTOR] No care home name found in email content")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ [CARE HOME EXTRACTOR] Error extracting care home name: {e}")
+            return CareHomeNameExtractionResponse(
+                care_home_name=None
+            )
+
+
+# Initialize extractors
+care_home_extractor = CareHomeNameExtractor()
+
 def init_database():
     """
     Initialize the Airtable connection and verify table access
@@ -202,16 +265,20 @@ def extract_email_data_from_context(context_object: Dict[str, Any]) -> Dict[str,
             'sender_first_name': '',  # Will be populated during conversation building
             'sender_last_name': '',   # Will be populated during conversation building
             
+            # Care home information (extracted from AI parsing)
+            'care_home_name': '',     # Will be populated during conversation building
+            
             # Conversation tracking - get name components from conversation building
             'initial_conversation_query': '',  # Will be set below
             'conversation_history': '[]'  # Empty array for new emails
         }
         
         # Build conversation query and get name components
-        conversation_json, first_name, last_name = build_initial_conversation_query(context_object)
+        conversation_json, first_name, last_name, care_home_name = build_initial_conversation_query(context_object)
         extracted_data['initial_conversation_query'] = conversation_json
         extracted_data['sender_first_name'] = first_name
         extracted_data['sender_last_name'] = last_name
+        extracted_data['care_home_name'] = care_home_name
         
         logger.info("📦 [AIRTABLE] Email data extracted successfully")
         logger.info(f"📦 [AIRTABLE] Ticket: {extracted_data['ticket_number']}")
@@ -350,21 +417,22 @@ def extract_conversation_headers(context_object: Dict[str, Any]) -> str:
         return context_object.get('headers', '')
 
 
-def build_initial_conversation_query(context_object: Dict[str, Any]) -> tuple[str, str, str]:
+def build_initial_conversation_query(context_object: Dict[str, Any]) -> tuple[str, str, str, str]:
     """
     Build structured JSON for the initial customer query
     
     This creates the first conversation entry containing:
     - sender_email: Original sender's email
     - sender_email_date: When the email was sent  
-    - sender_email_content: The email body content
+    - sender_content: The email body content
     - sender_name: AI-extracted sender name or fallback to email username
+    - care_home_name: AI-extracted care home name from email content
     
     Args:
         context_object: Context object containing email payload
         
     Returns:
-        Tuple of (json_string, sender_first_name, sender_last_name)
+        Tuple of (json_string, sender_first_name, sender_last_name, care_home_name)
     """
     try:
         logger.info("📝 [CONVERSATION] Building initial conversation query...")
@@ -395,12 +463,18 @@ def build_initial_conversation_query(context_object: Dict[str, Any]) -> tuple[st
             sender_last_name = ""
             logger.info(f"🔄 [CONVERSATION] Using fallback sender name from email: '{sender_name}'")
         
-        # Build the structured conversation entry (now with 4 fields)
+        # Step 4.5: AI extraction of care home name from email content
+        logger.info("🏠 [CONVERSATION] Extracting care home name using AI...")
+        care_home_result = care_home_extractor.extract_care_home_name(email_content)
+        care_home_name = care_home_result.care_home_name if care_home_result.care_home_name else ""
+        
+        # Step 5: Build the structured conversation entry (now with 4 fields)
         initial_query = {
             "sender_email": original_sender,
             "sender_email_date": email_date, 
-            "sender_email_content": email_content,
-            "sender_name": sender_name
+            "sender_content": email_content,
+            "sender_name": sender_name,
+            "care_home_name": care_home_name
         }
         
         # Convert to JSON string
@@ -413,7 +487,7 @@ def build_initial_conversation_query(context_object: Dict[str, Any]) -> tuple[st
         logger.info(f"📝 [CONVERSATION] Date: {email_date}")
         logger.info(f"📝 [CONVERSATION] Content length: {len(email_content)} chars")
         
-        return json_string, sender_first_name, sender_last_name
+        return json_string, sender_first_name, sender_last_name, care_home_name
         
     except Exception as e:
         logger.error(f"❌ [CONVERSATION] Error building initial conversation query: {e}")
@@ -423,42 +497,117 @@ def build_initial_conversation_query(context_object: Dict[str, Any]) -> tuple[st
         fallback_json = json.dumps({
             "sender_email": fallback_email,
             "sender_email_date": datetime.utcnow().isoformat(),
-            "sender_email_content": "",
-            "sender_name": fallback_name
+            "sender_content": "",
+            "sender_name": fallback_name,
+            "care_home_name": ""
         }, indent=2)
-        return fallback_json, fallback_name, ""
+        return fallback_json, fallback_name, "", ""
 
 
 def extract_email_date_from_headers(context_object: Dict[str, Any]) -> str:
     """
-    Extract the email date from headers
+    Extract the email date from headers and format it consistently
+    
+    This function parses raw email header dates and formats them to match
+    the format used by the AI conversation parsing agent for consistency.
     
     Args:
         context_object: Context object containing headers
         
     Returns:
-        Email date string from Date header
+        Formatted email date string (DD/MM/YYYY HH:MM BST format)
     """
     try:
         headers = context_object.get('headers', '')
         
         # Parse headers to find the Date field
         lines = headers.split('\n')
+        raw_date_str = None
+        
         for line in lines:
             if line.lower().startswith('date:'):
                 # Extract everything after 'Date: '
-                date_str = line[5:].strip()  # Remove 'Date:' and whitespace
-                logger.info(f"📅 [EMAIL DATE] Found date header: {date_str}")
-                return date_str
+                raw_date_str = line[5:].strip()  # Remove 'Date:' and whitespace
+                logger.info(f"📅 [EMAIL DATE] Found raw date header: {raw_date_str}")
+                break
         
-        # Fallback: use received timestamp or current time
-        fallback_date = context_object.get('received_timestamp', datetime.utcnow().isoformat())
-        logger.warning(f"⚠️ [EMAIL DATE] No Date header found, using fallback: {fallback_date}")
-        return fallback_date
+        if not raw_date_str:
+            # Fallback: use received timestamp or current time
+            fallback_date = context_object.get('received_timestamp', datetime.utcnow().isoformat())
+            logger.warning(f"⚠️ [EMAIL DATE] No Date header found, using fallback: {fallback_date}")
+            return _format_date_consistently(fallback_date)
+        
+        # Parse and format the date consistently
+        formatted_date = _format_date_consistently(raw_date_str)
+        logger.info(f"✅ [EMAIL DATE] Formatted date: {raw_date_str} → {formatted_date}")
+        return formatted_date
         
     except Exception as e:
         logger.error(f"❌ [EMAIL DATE] Error extracting date: {e}")
-        return datetime.utcnow().isoformat()
+        # Return current time in consistent format as fallback
+        current_time = datetime.utcnow()
+        return current_time.strftime("%d/%m/%Y %H:%M BST")
+
+
+def _format_date_consistently(date_string: str) -> str:
+    """
+    Format date string to consistent format used by AI agent (DD/MM/YYYY HH:MM BST)
+    
+    This ensures dates from NEW_EMAIL path match dates from EXISTING_EMAIL path.
+    
+    Args:
+        date_string: Raw date string in various formats
+        
+    Returns:
+        Formatted date string in DD/MM/YYYY HH:MM BST format
+    """
+    try:
+        from email.utils import parsedate_tz
+        import calendar
+        
+        # Try to parse as email header date first (most common case)
+        # Example: "Tue, 3 Jun 2025 17:36:45 +0100"
+        parsed_tuple = parsedate_tz(date_string.strip())
+        
+        if parsed_tuple:
+            # Convert to timestamp accounting for timezone
+            timestamp = calendar.timegm(parsed_tuple[:9])
+            if parsed_tuple[9]:  # timezone offset
+                timestamp -= parsed_tuple[9]  # adjust for timezone
+            
+            # Convert to datetime and format consistently
+            dt = datetime.utcfromtimestamp(timestamp)
+            # Format as DD/MM/YYYY HH:MM BST (matching AI agent format)
+            return dt.strftime("%d/%m/%Y %H:%M BST")
+        
+        # If email parsing fails, try other common formats
+        date_formats_to_try = [
+            "%Y-%m-%dT%H:%M:%S",           # ISO format: "2025-06-03T17:37:00"
+            "%Y-%m-%dT%H:%M:%SZ",          # ISO with Z: "2025-06-03T17:37:00Z"
+            "%Y-%m-%d %H:%M:%S",           # Simple format: "2025-06-03 17:37:00"
+            "%d/%m/%Y %H:%M",              # Already in target format: "03/06/2025 17:37"
+            "%d/%m/%Y %H:%M BST",          # Already perfect: "03/06/2025 17:37 BST"
+            "%d %b %Y, at %H:%M",          # Human format: "3 Jun 2025, at 17:44"
+        ]
+        
+        for date_format in date_formats_to_try:
+            try:
+                dt = datetime.strptime(date_string.strip(), date_format)
+                # Convert to our consistent format
+                return dt.strftime("%d/%m/%Y %H:%M BST")
+            except ValueError:
+                continue
+        
+        # If all parsing fails, log and return current time with note
+        logger.warning(f"⚠️ [DATE FORMAT] Could not parse date '{date_string}', using current time")
+        current_time = datetime.utcnow()
+        return current_time.strftime("%d/%m/%Y %H:%M BST")
+        
+    except Exception as e:
+        logger.error(f"❌ [DATE FORMAT] Error formatting date '{date_string}': {e}")
+        # Ultimate fallback
+        current_time = datetime.utcnow()
+        return current_time.strftime("%d/%m/%Y %H:%M BST")
 
 
 def parse_conversation_thread(text_content: str, payload_from: str, payload_headers: str) -> str:
@@ -504,7 +653,7 @@ def parse_conversation_thread(text_content: str, payload_from: str, payload_head
         latest_entry = {
             "sender_email": latest_sender,
             "sender_email_date": latest_date,
-            "sender_email_content": latest_content
+            "sender_content": latest_content
         }
         conversation_entries.append(latest_entry)
         
@@ -704,7 +853,8 @@ def store_new_email(email_data: Dict[str, Any]) -> bool:
             "sender_first_name": email_data['sender_first_name'],
             "sender_last_name": email_data['sender_last_name'],
             "initial_conversation_query": email_data['initial_conversation_query'],
-            "conversation_history": email_data['conversation_history']
+            "conversation_history": email_data['conversation_history'],
+            "care_home_name": email_data['care_home_name']
         }
         
         # Create record in Airtable

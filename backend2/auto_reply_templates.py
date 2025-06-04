@@ -392,7 +392,7 @@ def extract_sender_info_from_db_record(
         # Extract required fields with fallbacks
         sender_name = conversation_data.get("sender_name", "")
         sender_email = conversation_data.get("sender_email", "unknown@unknown.com")
-        sender_email_content = conversation_data.get("sender_email_content", "")
+        sender_content = conversation_data.get("sender_content", "")
         sender_email_date = conversation_data.get("sender_email_date", "")
         
         # Use database fields for first/last name with JSON fallback
@@ -412,14 +412,14 @@ def extract_sender_info_from_db_record(
         logger.info(f"📧 [TEMPLATE] First Name: '{first_name}'")
         logger.info(f"📧 [TEMPLATE] Last Name: '{last_name}'")
         logger.info(f"📧 [TEMPLATE] Email: {sender_email}")
-        logger.info(f"📧 [TEMPLATE] Content length: {len(sender_email_content)} chars")
+        logger.info(f"📧 [TEMPLATE] Content length: {len(sender_content)} chars")
         
         return {
             "sender_name": sender_name,
             "sender_first_name": first_name,
             "sender_last_name": last_name,
             "sender_email": sender_email,
-            "original_content": sender_email_content,
+            "original_content": sender_content,
             "original_date": sender_email_date
         }
         

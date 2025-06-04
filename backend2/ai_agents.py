@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 from openai import OpenAI
 
@@ -34,9 +34,13 @@ class TicketClassificationResponse(BaseModel):
 class ConversationEntry(BaseModel):
     """Single conversation entry with sender, date, content, and name"""
     sender_email: str
-    sender_email_date: str
-    sender_email_content: str
     sender_name: str
+    sender_email_date: str = Field(
+        description="Date and time when the sender's email was sent in DD/MM/YYYY HH:MM BST format",
+        examples=["03/06/2025 17:37 BST", "15/12/2024 09:30 BST"]
+    )
+    sender_content: str
+    chronological_order: int
 
 
 class ConversationParsingResponse(BaseModel):
@@ -174,7 +178,7 @@ Please analyze this subject line for the presence of an Argan ticket number and 
         )
 
 
-class ConversationParsingAgent(BaseAIAgent):
+class ConversationParsingAgent1(BaseAIAgent):
     """
     AI Agent for parsing email conversation threads
     
@@ -186,66 +190,15 @@ class ConversationParsingAgent(BaseAIAgent):
     
     def __init__(self):
         super().__init__()
-        self.agent_name = "ConversationParsingAgent"
+        self.agent_name = "ConversationParsingAgent1"
         
     def _build_system_prompt(self) -> str:
-        """Build the system prompt for conversation parsing with structured outputs"""
-        return """# Email Conversation Thread Parser
+        """Build the system prompt for conversation parsing with full business context"""
+        return """Context: You are an ai agent employed by a HR consultancy company called Argan HR Consultancy. They have built a complex automated email system that processes email threads that are passed to it, and extracts the back and forth conversations on the thread into a single conversational json of entries with attributes. 
 
-You are a specialist in parsing email conversation threads. Your job is to extract individual conversation entries from quoted email content and return them in the specified structured format.
+Generally, the story works like this. Argan's client emails with a query, the query gets forwarded to the system and it provides a ticket number and an auto reply to the client, CC'ing in advice@arganhrconsultancy.co.uk in the process. The Argan HR adviser and their client (or other stakeholders in the conversation) will have a back and forth conversation (outside of our system). Every time the client replies to the Argan advisor, this response (which may or may not include the other parts of the conversation in the thread) gets forwarded to our system.
 
-## Your Task
-1. Identify each separate conversation entry from quoted blocks
-2. Extract sender email, date, and content for each entry
-3. Handle various email client formats and date formats
-4. Clean up content by removing quote markers while preserving structure
-5. Extract FIRST NAME ONLY for sender_name, with email fallback
-
-## Input Patterns to Look For
-- "> On [date], [sender] wrote:"
-- ">> On [date] [sender] wrote:" 
-- Other email client quote formats
-
-## Date Format Examples
-- "3 Jun 2025, at 06:12"
-- "03/06/2025 05:55 BST"
-- "Mon, 5 Jun 2025 14:30:15 +0100"
-
-## Email Address and Name Processing
-Extract email and first name from these patterns:
-
-**Name Extraction Examples:**
-- "Rebecca Thompson <rebecca@company.com>" → email: "rebecca@company.com", sender_name: "Rebecca"
-- "John Smith <john.doe@company.com>" → email: "john.doe@company.com", sender_name: "John"
-- "Argan HR <argan-bot@arganhrconsultancy.co.uk>" → email: "argan-bot@arganhrconsultancy.co.uk", sender_name: "Argan"
-- "cvrcontractsltd <cvrcontractsltd@gmail.com>" → email: "cvrcontractsltd@gmail.com", sender_name: "cvrcontractsltd@gmail.com" (no clear first name, use email)
-- "john.doe@company.com" → email: "john.doe@company.com", sender_name: "john.doe@company.com" (no display name, use email)
-
-**sender_name Logic:**
-- If display name contains clear first name (like "Rebecca Thompson"), extract FIRST NAME ONLY ("Rebecca")
-- If display name is unclear/corporate (like "Argan HR", "cvrcontractsltd"), use the full display name
-- If display name looks like a single word that could be a first name, use it
-- If no display name or unclear, use the full email address as fallback
-
-## Content Processing Rules
-- Remove leading ">" quote markers from content lines
-- Preserve original message text and line breaks
-- Stop content extraction at the next conversation marker
-- **IMPORTANT**: Order entries by DATE chronologically (oldest first, newest/latest last)
-
-## Chronological Ordering
-- Parse all conversation entries first, then sort by actual date/time
-- The OLDEST message should be FIRST in the array (index 0)
-- The NEWEST/LATEST message should be LAST in the array (final index)
-- This creates a proper conversation timeline from earliest to most recent
-
-## Important Notes
-- Extract exact email addresses (remove display names in angle brackets)
-- For sender_name: prioritize extracting first names, fallback to email when unclear
-- Preserve original date strings as found
-- Be flexible with email client formatting variations
-- If no conversation entries found, return empty conversation_entries array
-- Always include sender_name field following the first name extraction logic"""
+Task: You will be passed the email forwarded into our system. In the email you may see a 'source of truth original query' from the client, and then multiple other conversation entries that followed after. You must extract the conversation entries (always ignoring the source of truth query) and produce a structured output as per the response output json schema. Also ignore any queries that pertain to be part of the auto-reply response. The schema will show you what to include. Your final response should order all the conversation entries in chronological order. If you cannot find a timestamp for a certain email entry, then set it's time stamp to be the same as the previous entry you have processed in the chronology. Once you have your final chronological list of entries, number them accordingly with the lowest number being the earliest entry."""
 
     async def process(self, input_data: Dict[str, Any]) -> str:
         """
@@ -261,11 +214,7 @@ Extract email and first name from these patterns:
             quoted_content = input_data.get('quoted_content', '')
             logger.info(f"🧵 [CONVERSATION AI] Parsing {len(quoted_content)} chars of quoted content...")
             
-            user_prompt = f"""Please parse the following quoted email content into individual conversation entries:
-
-{quoted_content}
-
-Return the structured JSON array of conversation entries following the format specified."""
+            user_prompt = f"""{quoted_content}"""
 
             # Use OpenAI Responses API for structured parsing
             response = self.client.responses.parse(
@@ -291,22 +240,72 @@ Return the structured JSON array of conversation entries following the format sp
             logger.error(f"❌ [CONVERSATION AI] Error parsing conversation: {e}")
             return "[]"  # Return empty array on error
     
-    def parse_conversation_thread_sync(self, quoted_email_content: str) -> str:
+    def parse_conversation_thread_sync(self, full_email_content: str, existing_conversation_history: str = "") -> str:
         """
         Synchronous version of conversation parsing using structured outputs
         
         Args:
-            quoted_email_content: The portion of email starting from first "> On ... wrote:" marker
+            full_email_content: The complete email content (not preprocessed)
+            existing_conversation_history: Existing conversation history from DB in JSON format
             
         Returns:
             JSON string containing array of conversation entries
         """
         try:
             logger.info("🤖 [CONVERSATION AI] Starting structured conversation parsing...")
+            logger.info(f"📧 [CONVERSATION AI] Processing {len(full_email_content)} characters of full email content")
             
-            user_prompt = f"""Please parse the following quoted email content into individual conversation entries:
+            # Check if we have existing conversation history
+            if existing_conversation_history and existing_conversation_history.strip():
+                logger.info(f"📋 [CONVERSATION AI] Found existing conversation history: {len(existing_conversation_history)} characters")
+                task_mode = "Task 1 only (email only - ignoring DB entries)"
+            else:
+                logger.info("📋 [CONVERSATION AI] No existing conversation history - processing email only")
+                task_mode = "Task 1 only (email only)"
+            
+            # ==================== DEBUGGING: FULL INPUT ANALYSIS ====================
+            logger.info("=" * 100)
+            logger.info("🔍 [AI DEBUG] FULL EMAIL CONTENT BEING SENT TO AI:")
+            logger.info("=" * 100)
+            logger.info(f"📏 Total content length: {len(full_email_content)} characters")
+            logger.info(f"📄 Line count: {len(full_email_content.splitlines()) if full_email_content else 0}")
+            logger.info(f"🎯 Task mode: {task_mode}")
+            logger.info("")
+            logger.info("📄 FULL EMAIL CONTENT:")
+            logger.info("-" * 50)
+            if full_email_content:
+                # Split into lines for better readability
+                lines = full_email_content.splitlines()
+                for i, line in enumerate(lines, 1):
+                    logger.info(f"{i:3d}: {line}")
+            else:
+                logger.info("(EMPTY OR NONE)")
+            logger.info("-" * 50)
+            logger.info("=" * 100)
+            # ========================================================================
+            
+            # Prepare the user prompt - only use email content, ignore existing conversation history
+            user_prompt = full_email_content
 
-{quoted_email_content}"""
+            # ==================== DEBUGGING: COMPLETE PROMPT ANALYSIS ====================
+            logger.info("=" * 100)
+            logger.info("🔍 [AI DEBUG] COMPLETE USER PROMPT BEING SENT TO AI AGENT:")
+            logger.info("=" * 100)
+            logger.info(f"📏 Total prompt length: {len(user_prompt)} characters")
+            logger.info(f"📄 Line count: {len(user_prompt.splitlines()) if user_prompt else 0}")
+            logger.info("")
+            logger.info("📄 COMPLETE USER PROMPT:")
+            logger.info("-" * 50)
+            if user_prompt:
+                # Split into lines for better readability
+                lines = user_prompt.splitlines()
+                for i, line in enumerate(lines, 1):
+                    logger.info(f"{i:3d}: {line}")
+            else:
+                logger.info("(EMPTY OR NONE)")
+            logger.info("-" * 50)
+            logger.info("=" * 100)
+            # ========================================================================
 
             # Use OpenAI Responses API with structured outputs for guaranteed schema compliance
             response = self.client.responses.parse(
@@ -321,13 +320,336 @@ Return the structured JSON array of conversation entries following the format sp
             # Extract the structured response
             parsed_response = response.output_parsed
             
+            # Apply date fallback logic before converting to JSON
+            processed_entries = self._apply_date_fallback_logic(parsed_response.conversation_entries)
+            
             # Convert to the expected JSON format (array of conversation entries)
             import json
-            conversation_array = [entry.model_dump() for entry in parsed_response.conversation_entries]
+            conversation_array = [entry.model_dump() for entry in processed_entries]
             
             logger.info(f"✅ [CONVERSATION AI] Successfully parsed {len(conversation_array)} conversation entries using structured outputs")
             return json.dumps(conversation_array, indent=2, ensure_ascii=False)
             
         except Exception as e:
             logger.error(f"❌ [CONVERSATION AI] Error in structured conversation parsing: {e}")
-            return "[]"  # Return empty array on error 
+            return "[]"  # Return empty array on error
+    
+    def _apply_date_fallback_logic(self, entries: List[ConversationEntry]) -> List[ConversationEntry]:
+        """
+        Apply +5 second fallback logic for missing dates to maintain chronological order
+        
+        Args:
+            entries: List of conversation entries from AI parsing
+            
+        Returns:
+            List of conversation entries with date fallbacks applied
+        """
+        from datetime import datetime, timedelta
+        import re
+        
+        try:
+            logger.info(f"📅 [DATE FALLBACK] Processing {len(entries)} entries for date consistency...")
+            
+            processed_entries = []
+            
+            for i, entry in enumerate(entries):
+                # Check if date is missing or empty
+                if not entry.sender_email_date or entry.sender_email_date.strip() == "":
+                    if i == 0:
+                        # First entry with no date - use current timestamp as fallback
+                        fallback_date = datetime.now().strftime("%d/%m/%Y %H:%M BST")
+                        entry.sender_email_date = fallback_date
+                        logger.info(f"📅 [DATE FALLBACK] Entry {i+1}: Used current timestamp as fallback")
+                    else:
+                        # Use previous entry's date + 5 seconds
+                        prev_entry = processed_entries[i-1]
+                        fallback_date = self._add_seconds_to_date(prev_entry.sender_email_date, 5)
+                        entry.sender_email_date = fallback_date
+                        logger.info(f"📅 [DATE FALLBACK] Entry {i+1}: Used previous date + 5 seconds")
+                else:
+                    logger.info(f"📅 [DATE FALLBACK] Entry {i+1}: Date present, no fallback needed")
+                
+                processed_entries.append(entry)
+            
+            logger.info(f"✅ [DATE FALLBACK] Successfully processed all {len(processed_entries)} entries")
+            return processed_entries
+            
+        except Exception as e:
+            logger.error(f"❌ [DATE FALLBACK] Error applying date fallback logic: {e}")
+            return entries  # Return original entries on error
+    
+    def _add_seconds_to_date(self, date_string: str, seconds_to_add: int) -> str:
+        """
+        Add seconds to a date string in various formats
+        
+        Args:
+            date_string: Original date string
+            seconds_to_add: Number of seconds to add
+            
+        Returns:
+            New date string with added seconds
+        """
+        from datetime import datetime, timedelta
+        import re
+        
+        try:
+            # Try to parse various date formats and add seconds
+            date_formats = [
+                "%d/%m/%Y %H:%M BST",      # "03/06/2025 17:37 BST"
+                "%d/%m/%Y %H:%M",          # "03/06/2025 17:37"
+                "%d %b %Y, at %H:%M",      # "3 Jun 2025, at 17:44"
+                "%a, %d %b %Y %H:%M:%S %z", # "Tue, 3 Jun 2025 17:36:45 +0100"
+                "%Y-%m-%d %H:%M:%S",       # "2025-06-03 17:37:00"
+                "%Y-%m-%dT%H:%M:%S",       # "2025-06-03T17:37:00"
+            ]
+            
+            parsed_date = None
+            original_format = None
+            
+            # Try to parse the date with various formats
+            for date_format in date_formats:
+                try:
+                    parsed_date = datetime.strptime(date_string.strip(), date_format)
+                    original_format = date_format
+                    break
+                except ValueError:
+                    continue
+            
+            if parsed_date is None:
+                # If parsing fails, append "+Xs" to original string
+                return f"{date_string} +{seconds_to_add}s"
+            
+            # Add seconds and format back to original format
+            new_date = parsed_date + timedelta(seconds=seconds_to_add)
+            
+            # Return in the same format as input
+            return new_date.strftime(original_format)
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [DATE FALLBACK] Could not parse date '{date_string}': {e}")
+            # Fallback: append "+Xs" to original string
+            return f"{date_string} +{seconds_to_add}s"
+
+
+class ConversationParsingAgent2(BaseAIAgent):
+    """
+    AI Agent for parsing email conversation threads - Version 2
+    
+    This agent takes quoted email content and structures it into 
+    individual conversation entries with sender, date, and content.
+    Much more robust than regex-based parsing for handling various
+    email client formats and edge cases.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.agent_name = "ConversationParsingAgent2"
+        
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt for conversation parsing with full business context"""
+        return """Context: You are an ai agent employed by a HR consultancy company called Argan HR Consultancy. They have built a complex automated email system that processes email threads that are passed to it, and extracts the back and forth conversations on the thread into a single conversational json of entries with attributes.   A previous agent (Agent 1) has parsed all the conversation entries in an email thread, and stored them in a db as a single conversational JSON of entries with attributes (ie the EXISTING JSON).  But another email has now just arrived into the system. Agent 1 has just parsed this new email, extracted the conversation entries from it, and constructed another json (ie the NEW JSON).  Your task is to analyse both JSON (the existing JSON and the new JSON), remove any duplicate conversation entries (or what appear to be duplicate conversation entries) and create a single final JSON in chronological order, as per your response output json schema. 
+
+If you cannot find a timestamp for a certain email entry, then set it's time stamp to be the same as the previous entry you have processed in the chronology. Once you have your final chronological list of entries, number them accordingly with the lowest number being the earliest entry.  A source of truth rule of thumb is that any unique entries in the NEW JSON should always follow the entries in the EXISTING JSON."""
+    
+    async def process(self, input_data: Dict[str, Any]) -> str:
+        """
+        Required abstract method - not used for Agent 2, we use parse_conversation_thread_sync instead
+        
+        Args:
+            input_data: Dict containing input data (not used)
+            
+        Returns:
+            Empty JSON array
+        """
+        logger.info("⚠️ [CONVERSATION AI 2] process() method called - this agent uses parse_conversation_thread_sync() instead")
+        return "[]"
+    
+    def parse_conversation_thread_sync(self, full_email_content: str, existing_conversation_history: str = "") -> str:
+        """
+        Synchronous version of conversation parsing using structured outputs
+        
+        Args:
+            full_email_content: The complete email content (not preprocessed)
+            existing_conversation_history: Existing conversation history from DB in JSON format
+            
+        Returns:
+            JSON string containing array of conversation entries
+        """
+        try:
+            logger.info("🤖 [CONVERSATION AI] Starting structured conversation parsing...")
+            logger.info(f"📧 [CONVERSATION AI] Processing {len(full_email_content)} characters of full email content")
+            
+            # Check if we have existing conversation history
+            if existing_conversation_history and existing_conversation_history.strip():
+                logger.info(f"📋 [CONVERSATION AI] Found existing conversation history: {len(existing_conversation_history)} characters")
+                task_mode = "Task 1 only (email only - ignoring DB entries)"
+            else:
+                logger.info("📋 [CONVERSATION AI] No existing conversation history - processing email only")
+                task_mode = "Task 1 only (email only)"
+            
+            # ==================== DEBUGGING: FULL INPUT ANALYSIS ====================
+            logger.info("=" * 100)
+            logger.info("🔍 [AI DEBUG] FULL EMAIL CONTENT BEING SENT TO AI:")
+            logger.info("=" * 100)
+            logger.info(f"📏 Total content length: {len(full_email_content)} characters")
+            logger.info(f"📄 Line count: {len(full_email_content.splitlines()) if full_email_content else 0}")
+            logger.info(f"🎯 Task mode: {task_mode}")
+            logger.info("")
+            logger.info("📄 FULL EMAIL CONTENT:")
+            logger.info("-" * 50)
+            if full_email_content:
+                # Split into lines for better readability
+                lines = full_email_content.splitlines()
+                for i, line in enumerate(lines, 1):
+                    logger.info(f"{i:3d}: {line}")
+            else:
+                logger.info("(EMPTY OR NONE)")
+            logger.info("-" * 50)
+            logger.info("=" * 100)
+            # ========================================================================
+            
+            # Prepare the user prompt - only use email content, ignore existing conversation history
+            user_prompt = full_email_content
+
+            # ==================== DEBUGGING: COMPLETE PROMPT ANALYSIS ====================
+            logger.info("=" * 100)
+            logger.info("🔍 [AI DEBUG] COMPLETE USER PROMPT BEING SENT TO AI AGENT:")
+            logger.info("=" * 100)
+            logger.info(f"📏 Total prompt length: {len(user_prompt)} characters")
+            logger.info(f"📄 Line count: {len(user_prompt.splitlines()) if user_prompt else 0}")
+            logger.info("")
+            logger.info("📄 COMPLETE USER PROMPT:")
+            logger.info("-" * 50)
+            if user_prompt:
+                # Split into lines for better readability
+                lines = user_prompt.splitlines()
+                for i, line in enumerate(lines, 1):
+                    logger.info(f"{i:3d}: {line}")
+            else:
+                logger.info("(EMPTY OR NONE)")
+            logger.info("-" * 50)
+            logger.info("=" * 100)
+            # ========================================================================
+            
+            # Use OpenAI Responses API with structured outputs for guaranteed schema compliance
+            response = self.client.responses.parse(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": self._build_system_prompt()},
+                    {"role": "user", "content": user_prompt}
+                ],
+                text_format=ConversationParsingResponse
+            )
+            
+            # Extract the structured response
+            parsed_response = response.output_parsed
+            
+            # Apply date fallback logic before converting to JSON
+            processed_entries = self._apply_date_fallback_logic(parsed_response.conversation_entries)
+            
+            # Convert to the expected JSON format (array of conversation entries)
+            import json
+            conversation_array = [entry.model_dump() for entry in processed_entries]
+            
+            logger.info(f"✅ [CONVERSATION AI] Successfully parsed {len(conversation_array)} conversation entries using structured outputs")
+            return json.dumps(conversation_array, indent=2, ensure_ascii=False)
+            
+        except Exception as e:
+            logger.error(f"❌ [CONVERSATION AI] Error in structured conversation parsing: {e}")
+            return "[]"  # Return empty array on error
+    
+    def _apply_date_fallback_logic(self, entries: List[ConversationEntry]) -> List[ConversationEntry]:
+        """
+        Apply +5 second fallback logic for missing dates to maintain chronological order
+        
+        Args:
+            entries: List of conversation entries from AI parsing
+            
+        Returns:
+            List of conversation entries with date fallbacks applied
+        """
+        from datetime import datetime, timedelta
+        import re
+        
+        try:
+            logger.info(f"📅 [DATE FALLBACK] Processing {len(entries)} entries for date consistency...")
+            
+            processed_entries = []
+            
+            for i, entry in enumerate(entries):
+                # Check if date is missing or empty
+                if not entry.sender_email_date or entry.sender_email_date.strip() == "":
+                    if i == 0:
+                        # First entry with no date - use current timestamp as fallback
+                        fallback_date = datetime.now().strftime("%d/%m/%Y %H:%M BST")
+                        entry.sender_email_date = fallback_date
+                        logger.info(f"📅 [DATE FALLBACK] Entry {i+1}: Used current timestamp as fallback")
+                    else:
+                        # Use previous entry's date + 5 seconds
+                        prev_entry = processed_entries[i-1]
+                        fallback_date = self._add_seconds_to_date(prev_entry.sender_email_date, 5)
+                        entry.sender_email_date = fallback_date
+                        logger.info(f"📅 [DATE FALLBACK] Entry {i+1}: Used previous date + 5 seconds")
+                else:
+                    logger.info(f"📅 [DATE FALLBACK] Entry {i+1}: Date present, no fallback needed")
+                
+                processed_entries.append(entry)
+            
+            logger.info(f"✅ [DATE FALLBACK] Successfully processed all {len(processed_entries)} entries")
+            return processed_entries
+            
+        except Exception as e:
+            logger.error(f"❌ [DATE FALLBACK] Error applying date fallback logic: {e}")
+            return entries  # Return original entries on error
+    
+    def _add_seconds_to_date(self, date_string: str, seconds_to_add: int) -> str:
+        """
+        Add seconds to a date string in various formats
+        
+        Args:
+            date_string: Original date string
+            seconds_to_add: Number of seconds to add
+            
+        Returns:
+            New date string with added seconds
+        """
+        from datetime import datetime, timedelta
+        import re
+        
+        try:
+            # Try to parse various date formats and add seconds
+            date_formats = [
+                "%d/%m/%Y %H:%M BST",      # "03/06/2025 17:37 BST"
+                "%d/%m/%Y %H:%M",          # "03/06/2025 17:37"
+                "%d %b %Y, at %H:%M",      # "3 Jun 2025, at 17:44"
+                "%a, %d %b %Y %H:%M:%S %z", # "Tue, 3 Jun 2025 17:36:45 +0100"
+                "%Y-%m-%d %H:%M:%S",       # "2025-06-03 17:37:00"
+                "%Y-%m-%dT%H:%M:%S",       # "2025-06-03T17:37:00"
+            ]
+            
+            parsed_date = None
+            original_format = None
+            
+            # Try to parse the date with various formats
+            for date_format in date_formats:
+                try:
+                    parsed_date = datetime.strptime(date_string.strip(), date_format)
+                    original_format = date_format
+                    break
+                except ValueError:
+                    continue
+            
+            if parsed_date is None:
+                # If parsing fails, append "+Xs" to original string
+                return f"{date_string} +{seconds_to_add}s"
+            
+            # Add seconds and format back to original format
+            new_date = parsed_date + timedelta(seconds=seconds_to_add)
+            
+            # Return in the same format as input
+            return new_date.strftime(original_format)
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [DATE FALLBACK] Could not parse date '{date_string}': {e}")
+            # Fallback: append "+Xs" to original string
+            return f"{date_string} +{seconds_to_add}s"

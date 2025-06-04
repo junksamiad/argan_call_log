@@ -1,9 +1,10 @@
 import logging
-from ..models.email_context import EmailContext
-from ..models.email_path import EmailPath
+from ...models.email_context import EmailContext
 import re
 import json
 from typing import Dict, Any, List, Optional
+from ...database import extract_email_date_from_headers
+from ...ai_agents import ConversationParsingAgent1
 
 logger = logging.getLogger(__name__)
 
@@ -45,31 +46,117 @@ def process_existing_email_path(context: EmailContext, ticket_number: str) -> di
     
     # Step 2: Parse conversation using ConversationParsingAgent
     logger.info("🧵 [EXISTING EMAIL PATH] Parsing conversation thread...")
-    new_conversation_history = parse_conversation_thread(context.text)
     
-    # Step 3: Update database record
-    logger.info("💾 [EXISTING EMAIL PATH] Updating database record...")
-    update_result = update_existing_record(
-        ticket_number=ticket_number,
-        new_conversation_history=new_conversation_history,
-        new_raw_headers=context.headers
+    # Extract existing conversation history from the record
+    existing_conversation_history = existing_record.get('fields', {}).get('conversation_history', '')
+    
+    # Debug: Log the existing conversation history details
+    if existing_conversation_history and existing_conversation_history.strip():
+        logger.info(f"📋 [EXISTING EMAIL PATH] Found existing conversation history: {len(existing_conversation_history)} characters")
+        logger.info("📋 [EXISTING EMAIL PATH] Existing conversation history preview:")
+        logger.info("-" * 50)
+        # Show first 500 chars and last 500 chars to verify it's not truncated
+        if len(existing_conversation_history) <= 1000:
+            logger.info(existing_conversation_history)
+        else:
+            logger.info(f"FIRST 500 CHARS: {existing_conversation_history[:500]}")
+            logger.info("...")
+            logger.info(f"LAST 500 CHARS: {existing_conversation_history[-500:]}")
+        logger.info("-" * 50)
+    else:
+        logger.info("📋 [EXISTING EMAIL PATH] No existing conversation history found in database")
+    
+    new_conversation_history = parse_conversation_thread(
+        email_text=context.text,
+        existing_conversation_history=existing_conversation_history
     )
     
-    if update_result['success']:
-        logger.info("✅ [EXISTING EMAIL PATH] Record updated successfully")
-        return {
-            "status": "conversation_updated",
-            "ticket_number": ticket_number,
-            "message": "Conversation history updated successfully",
-            "conversation_entries_count": len(new_conversation_history) if isinstance(new_conversation_history, list) else 0
-        }
+    # Check if we should update the conversation_history field
+    # Consider empty if: empty string, whitespace only, or just '[]'
+    is_conversation_history_empty = (
+        not existing_conversation_history or 
+        not existing_conversation_history.strip() or 
+        existing_conversation_history.strip() == '[]'
+    )
+    
+    if is_conversation_history_empty:
+        # Step 3: Update database record - no meaningful conversation history found
+        logger.info("💾 [EXISTING EMAIL PATH] No meaningful conversation history - updating database record...")
+        update_result = update_existing_record(
+            ticket_number=ticket_number,
+            new_conversation_history=new_conversation_history,
+            new_raw_headers=context.headers,
+            debug_raw_email_text=context.text  # Store raw email text for debugging
+        )
+        
+        if update_result['success']:
+            logger.info("✅ [EXISTING EMAIL PATH] Record updated successfully")
+            return {
+                "status": "conversation_updated",
+                "ticket_number": ticket_number,
+                "message": "Conversation history updated successfully",
+                "conversation_entries_count": len(new_conversation_history) if isinstance(new_conversation_history, list) else 0
+            }
+        else:
+            logger.error(f"❌ [EXISTING EMAIL PATH] Failed to update record: {update_result.get('error', 'Unknown error')}")
+            return {
+                "status": "error_update_failed",
+                "ticket_number": ticket_number,
+                "message": f"Failed to update record: {update_result.get('error', 'Unknown error')}"
+            }
     else:
-        logger.error(f"❌ [EXISTING EMAIL PATH] Failed to update record: {update_result.get('error', 'Unknown error')}")
-        return {
-            "status": "error_update_failed",
-            "ticket_number": ticket_number,
-            "message": f"Failed to update record: {update_result.get('error', 'Unknown error')}"
-        }
+        # Meaningful conversation history found - run Agent 2 to merge and deduplicate
+        logger.info("📋 [EXISTING EMAIL PATH] Meaningful conversation history found - running Agent 2 for merge/deduplication")
+        
+        # Import Agent 2
+        from ...ai_agents import ConversationParsingAgent2
+        
+        # Initialize Agent 2
+        agent2 = ConversationParsingAgent2()
+        
+        # Format the input for Agent 2: Agent 1's output + existing DB data
+        agent2_input = f"NEW JSON:\n{new_conversation_history}\n\nEXISTING JSON:\n{existing_conversation_history}"
+        
+        logger.info(f"🤖 [AGENT 2] Running Agent 2 with NEW JSON ({len(str(new_conversation_history))} chars) + EXISTING JSON ({len(existing_conversation_history)} chars)")
+        
+        # Run Agent 2 to merge and deduplicate
+        merged_conversation_history = agent2.parse_conversation_thread_sync(
+            full_email_content=agent2_input,
+            existing_conversation_history=""  # Not used by Agent 2
+        )
+        
+        # Convert JSON string back to list for processing
+        import json
+        try:
+            merged_conversation_list = json.loads(merged_conversation_history)
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ [AGENT 2] Failed to parse Agent 2 output as JSON: {e}")
+            merged_conversation_list = []
+        
+        # Step 3: Update database record with Agent 2's merged output
+        logger.info("💾 [EXISTING EMAIL PATH] Updating database with Agent 2's merged conversation history...")
+        update_result = update_existing_record(
+            ticket_number=ticket_number,
+            new_conversation_history=merged_conversation_list,
+            new_raw_headers=context.headers,
+            debug_raw_email_text=context.text  # Store raw email text for debugging
+        )
+        
+        if update_result['success']:
+            logger.info("✅ [EXISTING EMAIL PATH] Record updated successfully with merged conversation history")
+            return {
+                "status": "conversation_merged",
+                "ticket_number": ticket_number,
+                "message": "Conversation history merged and updated successfully",
+                "conversation_entries_count": len(merged_conversation_list) if isinstance(merged_conversation_list, list) else 0
+            }
+        else:
+            logger.error(f"❌ [EXISTING EMAIL PATH] Failed to update record: {update_result.get('error', 'Unknown error')}")
+            return {
+                "status": "error_merge_failed",
+                "ticket_number": ticket_number,
+                "message": f"Failed to update merged record: {update_result.get('error', 'Unknown error')}"
+            }
 
 def detect_auto_reply_forward(context: EmailContext) -> bool:
     """
@@ -303,13 +390,10 @@ def get_existing_record(ticket_number: str) -> Optional[Dict[str, Any]]:
         logger.info(f"🔍 [DATABASE] Searching for existing record with ticket: {ticket_number}")
         
         # Import database functions
-        from ...database import get_airtable_client
-        
-        # Get Airtable client and search for the record
-        client = get_airtable_client()
+        from ...database import table
         
         # Search using the ticket_number field
-        records = client.all(formula=f"{{ticket_number}}='{ticket_number}'")
+        records = table.all(formula=f"{{ticket_number}}='{ticket_number}'")
         
         if not records:
             logger.warning(f"⚠️ [DATABASE] No record found for ticket: {ticket_number}")
@@ -331,12 +415,13 @@ def get_existing_record(ticket_number: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ [DATABASE] Error retrieving record for ticket {ticket_number}: {e}")
         return None
 
-def parse_conversation_thread(email_text: str) -> List[Dict[str, Any]]:
+def parse_conversation_thread(email_text: str, existing_conversation_history: str) -> List[Dict[str, Any]]:
     """
     Parse conversation thread using ConversationParsingAgent
     
     Args:
         email_text: The full email text content
+        existing_conversation_history: Existing conversation history in JSON format
         
     Returns:
         List of conversation entries as dictionaries
@@ -344,18 +429,79 @@ def parse_conversation_thread(email_text: str) -> List[Dict[str, Any]]:
     try:
         logger.info("🤖 [CONVERSATION] Initializing ConversationParsingAgent...")
         
+        # ==================== DEBUGGING: FULL INPUT ANALYSIS ====================
+        logger.info("=" * 100)
+        logger.info("🔍 [DEBUG] RAW EMAIL TEXT BEING PASSED TO AI AGENT:")
+        logger.info("=" * 100)
+        logger.info(f"📏 Total length: {len(email_text)} characters")
+        logger.info(f"📄 Line count: {len(email_text.splitlines()) if email_text else 0}")
+        logger.info("")
+        logger.info("📄 FULL CONTENT:")
+        logger.info("-" * 50)
+        if email_text:
+            # Split into lines for better readability
+            lines = email_text.splitlines()
+            for i, line in enumerate(lines, 1):
+                logger.info(f"{i:3d}: {line}")
+        else:
+            logger.info("(EMPTY OR NONE)")
+        logger.info("-" * 50)
+        logger.info("=" * 100)
+        # ========================================================================
+        
         # Import the conversation parsing agent
-        from ...ai_agents import ConversationParsingAgent
+        from ...ai_agents import ConversationParsingAgent1
         
         # Initialize agent
-        agent = ConversationParsingAgent()
+        agent = ConversationParsingAgent1()
         
         # Parse the conversation thread
         logger.info(f"🧵 [CONVERSATION] Parsing {len(email_text)} characters of email content...")
-        conversation_json = agent.parse_conversation_thread_sync(email_text)
+        conversation_json = agent.parse_conversation_thread_sync(email_text, existing_conversation_history)
+        
+        # ==================== DEBUGGING: AI OUTPUT ANALYSIS ====================
+        logger.info("=" * 100)
+        logger.info("🤖 [DEBUG] AI AGENT OUTPUT ANALYSIS:")
+        logger.info("=" * 100)
+        logger.info(f"📄 JSON Response length: {len(conversation_json)} characters")
+        logger.info("")
+        logger.info("📄 RAW JSON RESPONSE:")
+        logger.info("-" * 50)
+        logger.info(conversation_json)
+        logger.info("-" * 50)
+        logger.info("=" * 100)
+        # ========================================================================
         
         # Parse JSON response
         conversation_entries = json.loads(conversation_json)
+        
+        # ==================== DEBUGGING: PARSED ENTRIES ANALYSIS ====================
+        logger.info("=" * 100)
+        logger.info("📋 [DEBUG] PARSED CONVERSATION ENTRIES ANALYSIS:")
+        logger.info("=" * 100)
+        logger.info(f"📊 Total entries found: {len(conversation_entries)}")
+        logger.info("")
+        
+        for i, entry in enumerate(conversation_entries, 1):
+            logger.info(f"📧 ENTRY {i}:")
+            logger.info(f"   👤 Sender Email: {entry.get('sender_email', 'N/A')}")
+            logger.info(f"   👤 Sender Name: {entry.get('sender_name', 'N/A')}")
+            logger.info(f"   📅 Date: {entry.get('sender_email_date', 'N/A')}")
+            logger.info(f"   📏 Content Length: {len(entry.get('sender_content', ''))}")
+            
+            # Show first few lines of content
+            content = entry.get('sender_content', '')
+            if content:
+                content_lines = content.splitlines()[:3]  # First 3 lines
+                logger.info(f"   📄 Content Preview:")
+                for line_num, line in enumerate(content_lines, 1):
+                    logger.info(f"      {line_num}: {line}")
+                if len(content.splitlines()) > 3:
+                    logger.info(f"      ... (+{len(content.splitlines()) - 3} more lines)")
+            logger.info("")
+        
+        logger.info("=" * 100)
+        # ================================================================================
         
         logger.info(f"✅ [CONVERSATION] Successfully parsed {len(conversation_entries)} conversation entries")
         return conversation_entries
@@ -364,7 +510,7 @@ def parse_conversation_thread(email_text: str) -> List[Dict[str, Any]]:
         logger.error(f"❌ [CONVERSATION] Error parsing conversation thread: {e}")
         return []  # Return empty list on error
 
-def update_existing_record(ticket_number: str, new_conversation_history: List[Dict[str, Any]], new_raw_headers: str) -> Dict[str, Any]:
+def update_existing_record(ticket_number: str, new_conversation_history: List[Dict[str, Any]], new_raw_headers: str, debug_raw_email_text: str = None) -> Dict[str, Any]:
     """
     Update existing Airtable record with new conversation history and raw headers
     
@@ -387,10 +533,7 @@ def update_existing_record(ticket_number: str, new_conversation_history: List[Di
         record_id = existing_record['record_id']
         
         # Import database functions
-        from ...database import get_airtable_client
-        
-        # Get Airtable client
-        client = get_airtable_client()
+        from ...database import table
         
         # Prepare update data
         update_data = {
@@ -398,11 +541,17 @@ def update_existing_record(ticket_number: str, new_conversation_history: List[Di
             'raw_headers': new_raw_headers
         }
         
+        # Add debug raw email text if provided (for analysis)
+        # NOTE: Commented out until debug_raw_email_text field is created in Airtable
+        # if debug_raw_email_text:
+        #     update_data['debug_raw_email_text'] = debug_raw_email_text
+        #     logger.info(f"📝 [DATABASE] Including debug raw email text ({len(debug_raw_email_text)} chars)")
+        
         logger.info(f"📝 [DATABASE] Updating record {record_id} with {len(new_conversation_history)} conversation entries")
         logger.info(f"📝 [DATABASE] Raw headers length: {len(new_raw_headers)} characters")
         
         # Update the record
-        client.update(record_id, update_data)
+        table.update(record_id, update_data)
         
         logger.info(f"✅ [DATABASE] Successfully updated record {record_id}")
         return {'success': True}
