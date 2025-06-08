@@ -237,7 +237,7 @@ def extract_email_data_from_context(context_object: Dict[str, Any]) -> Dict[str,
         extracted_data = {
             # Ticket tracking
             'ticket_number': context_object.get('ticket_number', ''),
-            'status': 'new',  # Always 'new' for new emails
+            'status': 'open - awaiting argan response',  # New emails awaiting response
             'created_at': context_object.get('received_timestamp', datetime.utcnow().isoformat()),
             
             # Email content
